@@ -106,6 +106,11 @@ if [ ! -e $G/phxboot-noclk ]; then
     $G/phxctl/phxctl smu 0x1E 800 || true
     echo "[port] clocks: gfx $($G/phxctl/phxctl smu 0x17 0 | grep -o 'out 0x[0-9a-f]*') fclk $($G/phxctl/phxctl smu 0x18 0 | grep -o 'out 0x[0-9a-f]*')"
 fi
+# [port] fw13: GFX clock gating (MGCG + CGCG/CGLS) that the bring-up leaves at reset defaults; idle package 9.95 -> 7.91 W
+# (2026-11-24). Kill switch: the file $G/gpucg-off. Before the marker goes, like the clock caps above.
+if [ ! -e $G/gpucg-off ] && [ -x $G/gpucg.sh ]; then
+    echo "[port] gpucg: $($G/gpucg.sh on 2>&1)"
+fi
 rm -f "$MARK"; sync
 echo "done $(date '+%T')"
 
