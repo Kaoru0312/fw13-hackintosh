@@ -18,8 +18,8 @@
 
 | # | 項目 | 對應 HANDOFF | 來源 | FW13 狀態 |
 |---|---|---|---|---|
-| 1 | **GPU 閒置功耗：CP 一直 busy**（doorbell range + MES oversubscription timer） | 待辦 4（GPU 接管約 4 W）、GFXOFF 實驗沒效果 | nullarc PR #14 | 已確認 FW13 的 `mesboot.c` 有同樣的缺漏；補丁已備好，**還沒編譯、還沒上機** |
-| 2 | GFX 時鐘閘控（MGCG/CGCG）→ SDMA 解除 halt → GFXOFF | 同上 | nullarc PR #14 build 37、#24、#25；mechrevo `macos/thermal/gpucg.sh` | 要在第 1 項之後做 |
+| 1 | GPU 閒置功耗：CP 一直 busy（doorbell range + MES oversubscription timer） | 待辦 4（GPU 接管約 4 W） | nullarc PR #14 | **2026-11-24 實測 FW13 沒有這個問題**（GRBM 0x0000302c），不用做 |
+| 2 | **GFX 時鐘閘控（MGCG/CGCG）**→ SDMA 解除 halt → GFXOFF | 待辦 4、GFXOFF 實驗沒效果 | nullarc PR #14 build 37、#24、#25；mechrevo `macos/thermal/gpucg.sh` | **2026-11-24 實測閘控全關**；`gpu/gpucg-test.sh` 已備好，沒跑過 |
 | 3 | **休眠（S4）含 GPU 恢復** | 睡眠 ❌ | nullarc PR #20（`docs/SLEEP.md`）；660m-Metal `SSDT-S3.dsl` | 沒驗證 |
 | 4 | H.264 硬解（Phoenix VCN 4.0.2） | 硬解 ❌、`vcn/PHASE3.md` | mechrevo `patches/phxbringup-vcn.patch`、`macos/nullarc/vcn/` | 沒驗證；PHASE3 的一個結論要更正 |
 | 5 | NVMTL 外掛的修正（Vision/OCR 閃退、WindowServer 效能、Ghostty） | all_apps 之後的穩定性 | mechrevo `macos/nullarc/patches/nvmtl-*.patch` | 沒驗證 FW13 有沒有這些症狀 |
@@ -29,6 +29,18 @@
 | — | HiDPI | 待辦 3 | **5 個 repo 都沒有解法**（mechrevo、gem12 都寫「无 HiDPI」） | — |
 
 ---
+
+## 2026-11-24 FW13 實測（只讀）
+
+- `GRBM_STATUS`（`phxctl regs 0x2004`，GPU 接管、閒置）= **`0x0000302c`** → CP 是閒置的，**FW13 沒有第 1 項的問題**，
+  `mesboot-idle-pr14.patch` 對 FW13 沒用，不要裝（補丁檔留著只當紀錄）。
+- 時鐘閘控暫存器（照 mechrevo `gpucg.sh status`）：`0xEC48 = 0x000607ff`、`0xEC49 = 0x0001003c`、`0xECC5 = 0x0001003c`、
+  `0x21C2 = 0x00400000`、`0x306A = 0x00000000`、`0x12BC = 0x00400000`。
+  解讀：MGCG/CGCG/CGLS/3D 的 override 位元（0x7BE）全部是 1、CGCG 兩個 enable 位元（bit 0–1）是 0、GUI idle 中斷沒開、
+  SDMA CGCG 沒開 → **GFX 時鐘閘控整個沒開**，跟上游 build 37 commit 訊息說的「bring-up leaves every RLC clock gating override set」一致。
+  → 第 2 項變成最優先。實驗腳本：`gpu/gpucg-test.sh`（基準 60 秒 → 開閘控 → 90 秒內每 10 秒跑 mtlprobe，失敗就寫回原值）。
+  寫入序列用 mechrevo `gpucg.sh all`，跑完 override 會是 `0x00060041`；上游 kext 寫的是 `0x000600c1`（保留 0x80，即 3D CGCG 的 override），
+  兩者差這一個位元，哪個對 FW13 比較好不知道。
 
 ## 1. GPU 閒置功耗：CP 一直 busy（最值得先做）
 
