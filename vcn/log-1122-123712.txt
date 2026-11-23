@@ -1,0 +1,8 @@
+== 2026-11-22 12:37:12  uptime  6:14
+== check（只讀）
+  phx-fb-mc-base 0x8000000000  phx-debug Yes
+  SMU GetEnabledSmuFeatures(lo) -> kr 0x00000000 resp 0x01 out 0xfbfff7ff
+  fw_shared 大小 148 bytes（sq @16, smu_dpm @120, drm_key @124）
+  配置：VCPU BO +0xc000000（MC 0x800c000000）fw_shared +0xc0a0000  ring +0xc100000（16384 bytes）
+  !! VRAM +0xc000000..+0xc200000 有 524288 個非 0 dword（第一個 +0xc000000）→ 可能有人在用，不要跑 up
+check 沒過，停止（沒有改任何東西）

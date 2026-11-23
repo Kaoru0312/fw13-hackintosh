@@ -1,0 +1,1395 @@
+// PhxFB: the 780M's display as an IOFramebuffer that PhxAccel (NMXAccel) composites for WindowServer.
+// Like NullMoth's NMIntelFB (phase 1), it takes over the mode the firmware (GOP) already lit, at boot in place of the
+// firmware framebuffer (IONDRV), and writes nothing to the display engine: the scan-out surface is the boot console's
+// (IOPlatformExpert::getConsoleInfo), the accelerator's display pipe copies each finished frame into a write-combined CPU
+// mapping of it, and a timer at the panel's refresh (measured on the display engine, measureRefresh) stands in for the VBL
+// interrupt WindowServer paces an accelerated display on.
+#include <IOKit/IOLib.h>
+#include <IOKit/pci/IOPCIDevice.h>
+#include <IOKit/graphics/IOFramebuffer.h>
+#include <IOKit/graphics/IODisplay.h>
+#include <IOKit/IODeviceMemory.h>
+#include <IOKit/pwr_mgt/RootDomain.h>
+#include <IOKit/IOPlatformExpert.h>
+#include <IOKit/IODeviceTreeSupport.h>
+#include <pexpert/pexpert.h>
+#include <kern/thread_call.h>
+#include <IOKit/IOBufferMemoryDescriptor.h>
+#include <IOKit/IORangeAllocator.h>
+#include <IOKit/IOSubMemoryDescriptor.h>
+#include <libkern/OSAtomic.h>
+#include <IOKit/IOCommandGate.h>
+#include <sys/sysctl.h>
+#include "nvrm_vram_abi.h"
+#include "nvrm_gpuva_abi.h"
+
+void phxAgdcInstall();   // phxagdc.cpp: the AppleGraphicsDeviceControl that reports this panel (debug.phxagdc)
+void phxAgdcRemove();
+void phxHoldInit(IOService *fb, unsigned bootHoldSec);   // phxagdc.cpp: debug.phxfb_hold keeps this framebuffer (and so the GPU) busy
+void phxHoldAdd(IOService *fb);
+
+#define PFBLOG(fmt, ...) IOLog("PhxFB: " fmt "\n", ##__VA_ARGS__)
+
+static int gAlias = 1;
+static bool gAliasSysctl;
+SYSCTL_INT(_debug, OID_AUTO, phxfb_alias, CTLFLAG_RW | CTLFLAG_LOCKED, &gAlias, 0,
+           "1 = frames are copied into the scan-out through its system-RAM address (the carve-out), 0 = through the GPU's BAR");
+
+// The VBL tick. XNU's timer coalescing moves a kernel deadline by up to an eighth of its delay, at most 1 ms, so a
+// 120 Hz tick could land anywhere in the first millisecond after the vblank it stands for. The system-critical urgency
+// that is never moved is not exported to kexts (thread_call_enter_delayed_with_leeway), so the tick is armed 1.5 ms
+// early and re-armed for its deadline from there, each stage with an eighth of the previous slop, until less than
+// 50 us remain (debug.phxfb_vbl_staged, 0 = one plain deadline). The lateness of each tick is summed for the
+// measurements, and nvrm-accel.cpp times its presents against the last tick (gPhxVblLastAbs, gPhxFrameAbs).
+static int gVblStaged = 1;
+static SInt64 gVblN, gVblLateUsSum, gVblLateUsMax;
+uint64_t gPhxVblLastAbs, gPhxFrameAbs;
+volatile uint64_t gPhxVblSeq;   // ticks so far, counted before the handlers run: the display pipe completes on the next one
+SYSCTL_INT(_debug, OID_AUTO, phxfb_vbl_staged, CTLFLAG_RW | CTLFLAG_LOCKED, &gVblStaged, 0,
+           "1 = the VBL tick is armed early and re-armed until its deadline (little coalescing slop), 0 = one plain deadline");
+SYSCTL_QUAD(_debug, OID_AUTO, phxfb_vbl_n, CTLFLAG_RD | CTLFLAG_LOCKED, &gVblN, "VBL ticks fired");
+SYSCTL_QUAD(_debug, OID_AUTO, phxfb_vbl_late_us_sum, CTLFLAG_RW | CTLFLAG_LOCKED, &gVblLateUsSum, "microseconds the VBL ticks fired past their deadlines, summed");
+SYSCTL_QUAD(_debug, OID_AUTO, phxfb_vbl_late_us_max, CTLFLAG_RW | CTLFLAG_LOCKED, &gVblLateUsMax, "the latest VBL tick, microseconds past its deadline (writable: 0 restarts it)");
+int phxSpawnHdmi(int enable);
+static int phxfb_hdmi_sysctl SYSCTL_HANDLER_ARGS;
+SYSCTL_PROC(_debug, OID_AUTO, phxfb_hdmi, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED | CTLFLAG_KERN,
+            NULL, 0, phxfb_hdmi_sysctl, "I",
+            "1 = spawn PhxHDMIHead (external 1080p60 HDMI head), 0 = terminate it");
+
+static struct sysctl_oid *const kFbOids[] = { &sysctl__debug_phxfb_alias, &sysctl__debug_phxfb_vbl_staged, &sysctl__debug_phxfb_vbl_n,
+                                              &sysctl__debug_phxfb_vbl_late_us_sum, &sysctl__debug_phxfb_vbl_late_us_max,
+                                              &sysctl__debug_phxfb_hdmi };
+
+// The panel's backlight is the display block's PWM (DCN 3.1.4 PWRSEQ0, segment 2 base 0x34c0): ACPI's _BCM only asks the
+// GPU driver through ATIF (AFN7), and the firmware leaves the PWM on at full duty (period 4000, 12 bits). It is set as
+// Linux's panel_cntl does without DMUB: lock the group, write the active count, unlock, wait for the pending update.
+// tools/phxctl/phxbl does the same from user space. -phxbloff leaves the panel without a brightness control.
+enum : uint32_t { kBlPwrSeq = 0x34c0 + 0x2f14, kBlCntl = 0x34c0 + 0x2f19, kBlPeriod = 0x34c0 + 0x2f1b, kBlLock = 0x34c0 + 0x2f1c };
+// The firmware runs both PWM generators, PWRSEQ0 and PWRSEQ1 (+0x6c), at full duty, and PWRSEQ0 alone left the panel's
+// brightness as it was (2026-10-25: eDP DPCD 0x721 says the panel follows its PWM pin): both get the level.
+static constexpr uint32_t kBlSeqs[] = { 0, 0x2f85 - 0x2f19 };
+static constexpr uint32_t kBlMax = 1024;   // the brightness parameter's range
+class PhxAMDFB;
+static IOService *phxBacklightCreate(PhxAMDFB *fb);
+
+static volatile UInt32 gAllocCookieSeq = 1;
+static inline uint64_t nextAllocCookie() {
+    uint32_t c = (uint32_t)OSIncrementAtomic(&gAllocCookieSeq);
+    return 0x5048580000000000ull | (c ? c : 1);
+}
+
+class PhxAMDFB : public IOFramebuffer {
+    OSDeclareDefaultStructors(PhxAMDFB)
+    friend class PhxHDMIHead;
+    friend int phxSpawnHdmi(int enable);
+private:
+    IOPCIDevice *fPCI = nullptr;
+    IOMemoryMap *fSurfMap = nullptr;   // write-combined CPU view of the scan-out surface through the BAR
+    // The same surface through its system-RAM address: the 780M's VRAM is a carve-out of system memory, and amdgpu maps
+    // it there on APUs rather than through the BAR. Through the BAR a 2560x1600 frame took ~110 ms to copy (~7 fps, the
+    // whole desktop lagged, 2026-10-20). This view comes out write-back although it asks for write-combined (frames
+    // copied with plain stores stayed in the CPU cache: stripes), so the display pipe writes it with non-temporal stores.
+    IOMemoryMap *fAliasMap = nullptr;
+    IOMemoryMap *fMmio = nullptr;      // BAR5, for the backlight PWM
+    IOService *fBacklight = nullptr;   // the brightness parameter handler, named "backlight"
+    unsigned fAliasTries = 0;
+    volatile UInt32 fAliasBusy = 0;
+    struct Irq { IOFBInterruptProc proc = nullptr; OSObject *target = nullptr; void *ref = nullptr; };
+    Irq fVbl[4], fConnect;   // IOFramebuffer itself and, when it asks, IOAccelDisplayPipe each register a VBL handler
+    thread_call_t fVblTimer = nullptr;
+    uint64_t fVblNext = 0;
+    volatile bool fStopping = false;
+    bool fBeside = false;   // another framebuffer (the firmware's IONDRV one) already drives this GPU: not the console
+    IOPhysicalAddress fBase = 0;
+    uint32_t fWidth = 0, fHeight = 0, fRowBytes = 0;
+    static constexpr uint64_t kFrameNs = 16666667ull;   // 60 Hz, when the refresh cannot be measured
+    uint64_t fFrameNs = kFrameNs;
+    uint32_t fRefreshMilliHz = 60000, fHTotal = 0, fVTotal = 0;
+    // [port] HiDPI: programmable modes the OS installs (from the display override's scale-resolutions) once the
+    // framebuffer publishes IOFBScalerInfo. Only timings whose active and scaled size both equal the panel are accepted:
+    // the scan-out stays the panel's native frame, and a 2x HiDPI mode (looks like 1128x752 on 2256x1504) renders the same
+    // pixel count with the UI doubled. Their mode IDs are 0x80000000 + index into fDetailed.
+    OSArray *fDetailed = nullptr;
+    IODisplayModeID fCurMode = 1;
+    uint32_t fValidateCalls = 0, fDetailedCalls = 0, fEdidReads = 0;
+    OSArray *fValidateSeen = nullptr;   // [port] round 4 diagnostics
+    static constexpr uint32_t kDetailedBase = 0x80000000u;
+    const IODetailedTimingInformationV2 *detailedFor(IODisplayModeID m) const {
+        if (!fDetailed || (uint32_t)m < kDetailedBase) return nullptr;
+        OSData *d = OSDynamicCast(OSData, fDetailed->getObject((uint32_t)m - kDetailedBase));
+        return d ? timingFrom(d->getBytesNoCopy(), d->getLength()) : nullptr;
+    }
+    // [port] round 3: the OS hands over an IOFBDisplayModeDescription (mode info + timing info), not a bare
+    // IODetailedTimingInformationV2 as the header says; round 2 read its mode-info prefix as a timing and saw 0x0.
+    // Tell them apart by size, as IONDRVFramebuffer does.
+    static const IODetailedTimingInformationV2 *timingFrom(const void *p, size_t len) {
+        if (!p) return nullptr;
+        if (len >= sizeof(IOFBDisplayModeDescription))
+            return &((const IOFBDisplayModeDescription *)p)->timingInfo.detailedInfo.v2;
+        if (len >= sizeof(IODetailedTimingInformationV2)) return (const IODetailedTimingInformationV2 *)p;
+        return nullptr;
+    }
+    bool modeKnown(IODisplayModeID m) const { return m == 1 || detailedFor(m) != nullptr; }
+    bool detailedFits(const IODetailedTimingInformationV2 *t) const {
+        const uint32_t w = t->horizontalScaled ? t->horizontalScaled : t->horizontalActive;
+        const uint32_t h = t->verticalScaled ? t->verticalScaled : t->verticalActive;
+        return t->horizontalActive == fWidth && t->verticalActive == fHeight && w == fWidth && h == fHeight;
+    }
+    void nativeTiming(IODetailedTimingInformationV2 *t) const {
+        bzero(t, sizeof(*t));
+        const uint32_t hb = fHTotal > fWidth ? fHTotal - fWidth : 160, vb = fVTotal > fHeight ? fVTotal - fHeight : 30;
+        t->horizontalActive = fWidth; t->horizontalBlanking = hb; t->horizontalSyncOffset = 48; t->horizontalSyncPulseWidth = 32;
+        t->verticalActive = fHeight; t->verticalBlanking = vb; t->verticalSyncOffset = 3; t->verticalSyncPulseWidth = 6;
+        t->pixelClock = (uint64_t)(fWidth + hb) * (fHeight + vb) * fRefreshMilliHz / 1000;
+        t->minPixelClock = t->pixelClock; t->maxPixelClock = t->pixelClock;
+    }
+    static constexpr unsigned kBootHoldSec = 120;   // the boot daemon releases it sooner (debug.phxfb_hold=0)
+    // The accelerator is NullMoth's, written against an NVIDIA RM: it backs each IOAccel surface with "VRAM" from the
+    // framebuffer (nvAllocVram) and a GPU address from the RM (nvGpuVaAlloc/Map). On the 780M nothing on the GPU reads
+    // those surfaces -- the display pipe copies finished frames by CPU, and RADV keeps its own GPU addresses in
+    // PhxBringup -- so VRAM here is physically contiguous system memory (the 780M has no other kind) and a GPU address
+    // is a number from a private range that never enters a page table. Without them every surface_flush WindowServer
+    // makes failed ("failed to alloc GART space"), 30 times a second, and no frame reached the panel (2026-10-20).
+    static constexpr uint64_t kVaBase = 0x100000000000ull, kVaSize = 1ull << 40, kVramCap = 1024ull << 20;
+    IORangeAllocator *fVa = nullptr;
+    volatile SInt64 fVramBytes = 0;
+    volatile SInt32 fHandles = 0;
+    unsigned fRmLogged = 0;
+    // VRAM comes from one physically contiguous pool taken at start, while memory is still unfragmented: allocated one
+    // by one, a 16 MB surface found no contiguous run hours into a session, and when WindowServer re-allocated its frame
+    // on display wake the panel kept the frame from before the display slept (2026-10-21). An allocation is a
+    // sub-descriptor of the pool (its handle); past the pool each one is contiguous memory of its own, as before.
+    static constexpr uint64_t kPoolTry[3] = { 512ull << 20, 256ull << 20, 128ull << 20 };
+    IOBufferMemoryDescriptor *fPool = nullptr;
+    IORangeAllocator *fPoolRange = nullptr;
+    uint8_t *fPoolKva = nullptr;
+    uint64_t fPoolPhys = 0, fPoolBytes = 0;
+
+    void poolInit() {
+        for (uint64_t bytes : kPoolTry) {
+            IOBufferMemoryDescriptor *b = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task,
+                kIODirectionInOut | kIOMemoryPhysicallyContiguous, bytes, 0x0000FFFFFFFFF000ull);
+            if (b && b->prepare() != kIOReturnSuccess) OSSafeReleaseNULL(b);
+            if (!b) continue;
+            fPoolRange = IORangeAllocator::withRange(bytes, PAGE_SIZE, 0, IORangeAllocator::kLocking);
+            if (!fPoolRange) { b->complete(); b->release(); return; }
+            fPool = b; fPoolKva = (uint8_t *)b->getBytesNoCopy(); fPoolBytes = bytes;
+            fPoolPhys = b->getPhysicalSegment(0, nullptr, kIOMemoryMapperNone);
+            PFBLOG("VRAM pool: %llu MB at phys 0x%llx", bytes >> 20, fPoolPhys);
+            return;
+        }
+        PFBLOG("VRAM pool: no contiguous run of %llu MB or less, every allocation on its own", kPoolTry[2] >> 20);
+    }
+    void poolFree() {
+        OSSafeReleaseNULL(fPoolRange);
+        if (fPool) { fPool->complete(); OSSafeReleaseNULL(fPool); }
+        fPoolKva = nullptr; fPoolPhys = fPoolBytes = 0;
+    }
+
+    bool poolAlloc(NVRMVramRequest *r, uint64_t bytes) {
+        IORangeScalar off = 0;
+        if (!fPoolRange || !fPoolRange->allocate(bytes, &off, PAGE_SIZE)) return false;
+        IOSubMemoryDescriptor *s = IOSubMemoryDescriptor::withSubRange(fPool, off, bytes, kIODirectionInOut);
+        if (!s) { fPoolRange->deallocate(off, bytes); return false; }
+        bzero(fPoolKva + off, bytes);
+        r->handle = s; r->kva = fPoolKva + off; r->actualSize = bytes; r->allocationCookie = nextAllocCookie();
+        r->phys = fPoolPhys + off;
+        return true;
+    }
+
+    IOReturn vramAlloc(NVRMVramRequest *r) {
+        if (!r || r->version != NVRM_VRAM_ABI_VERSION || !r->size) return kIOReturnBadArgument;
+        const uint64_t bytes = round_page_64(r->size);
+        if ((uint64_t)OSAddAtomic64((SInt64)bytes, &fVramBytes) + bytes > kVramCap) {
+            OSAddAtomic64(-(SInt64)bytes, &fVramBytes);
+            if (fRmLogged++ < 16) PFBLOG("VRAM: %llu bytes refused, %lld already out (cap %llu)", bytes, fVramBytes, kVramCap);
+            return kIOReturnNoMemory;
+        }
+        if (poolAlloc(r, bytes)) {
+            r->mappedTotal = (uint64_t)fVramBytes;
+            if (fRmLogged++ < 16) PFBLOG("VRAM: %llu bytes at phys 0x%llx from the pool (%lld out)", bytes, r->phys, fVramBytes);
+            return kIOReturnSuccess;
+        }
+        IOBufferMemoryDescriptor *b = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task,
+            kIODirectionInOut | kIOMemoryPhysicallyContiguous, bytes, 0x0000FFFFFFFFF000ull);
+        if (b && b->prepare() != kIOReturnSuccess) OSSafeReleaseNULL(b);
+        if (!b) {
+            OSAddAtomic64(-(SInt64)bytes, &fVramBytes);
+            if (fRmLogged++ < 16) PFBLOG("VRAM: no contiguous %llu bytes", bytes);
+            return kIOReturnNoMemory;
+        }
+        bzero(b->getBytesNoCopy(), bytes);
+        r->handle = b; r->kva = b->getBytesNoCopy(); r->actualSize = bytes; r->allocationCookie = nextAllocCookie();
+        r->phys = b->getPhysicalSegment(0, nullptr, kIOMemoryMapperNone);
+        r->mappedTotal = (uint64_t)fVramBytes;
+        if (fRmLogged++ < 16) PFBLOG("VRAM: %llu bytes at phys 0x%llx (%lld out)", bytes, r->phys, fVramBytes);
+        return kIOReturnSuccess;
+    }
+    IOReturn vramFree(NVRMVramRequest *r) {
+        if (!r || r->version != NVRM_VRAM_ABI_VERSION) return kIOReturnBadArgument;
+        if (IOSubMemoryDescriptor *s = OSDynamicCast(IOSubMemoryDescriptor, (OSObject *)r->handle)) {
+            const uint64_t off = (uint64_t)((uint8_t *)r->kva - fPoolKva), len = s->getLength();
+            if (!fPoolRange || (uint8_t *)r->kva < fPoolKva || off + len > fPoolBytes) return kIOReturnBadArgument;
+            OSAddAtomic64(-(SInt64)len, &fVramBytes);
+            fPoolRange->deallocate(off, len);
+            s->release();
+            return kIOReturnSuccess;
+        }
+        IOBufferMemoryDescriptor *b = OSDynamicCast(IOBufferMemoryDescriptor, (OSObject *)r->handle);
+        if (!b) return kIOReturnBadArgument;
+        OSAddAtomic64(-(SInt64)b->getLength(), &fVramBytes);
+        b->complete(); b->release();
+        return kIOReturnSuccess;
+    }
+    IOReturn rmCall(const OSSymbol *fn, void *p1) {
+        if (fn->isEqualTo(NVRM_GPUVA_FN_HANDLES)) {
+            NVRMRmHandles *h = (NVRMRmHandles *)p1;
+            if (!h || h->version != NVRM_GPUVA_ABI_VERSION) return kIOReturnBadArgument;
+            h->kapiDevice = this; h->hClient = 0x50480001; h->hDevice = 0x50480002; h->hSubDevice = 0x50480003;
+            return kIOReturnSuccess;
+        }
+        NVRMGpuVaRequest *g = (NVRMGpuVaRequest *)p1;
+        if (!g || g->version != NVRM_GPUVA_ABI_VERSION) return kIOReturnBadArgument;
+        if (fn->isEqualTo(NVRM_GPUVA_FN_ALLOC)) {
+            const uint64_t len = round_page_64(g->size);
+            uint64_t align = g->align > PAGE_SIZE ? g->align : PAGE_SIZE;
+            if (align & (align - 1)) align = PAGE_SIZE;
+            IORangeScalar off = 0;
+            if (!fVa || !len || !fVa->allocate(len, &off, align)) { g->status = 1; return kIOReturnNoSpace; }
+            g->gpuva = kVaBase + off; g->hVirt = (unsigned)OSIncrementAtomic(&fHandles) + 1; g->status = 0;
+            return kIOReturnSuccess;
+        }
+        if (fn->isEqualTo(NVRM_GPUVA_FN_MAP)) {   // nothing to map: no GPU work reaches these surfaces
+            g->hMemory = (unsigned)OSIncrementAtomic(&fHandles) + 1; g->status = 0;
+            return kIOReturnSuccess;
+        }
+        if (fn->isEqualTo(NVRM_GPUVA_FN_FREE)) {
+            if (!(g->flags & NVRM_GPUVA_FLAG_UNMAP_ONLY) && fVa && g->gpuva >= kVaBase && g->gpuva - kVaBase < kVaSize)
+                fVa->deallocate(g->gpuva - kVaBase, round_page_64(g->size));
+            g->status = 0;
+            return kIOReturnSuccess;
+        }
+        return kIOReturnUnsupported;
+    }
+
+    static void vblFire(thread_call_param_t p0, thread_call_param_t) {
+        PhxAMDFB *me = (PhxAMDFB *)p0;
+        // [port] display sleep: keep ticking while the panel is dark. Stopping here left IOAccelDisplayPipe waiting forever
+        // for the VBL that retires its pending swap: WindowServer's main thread blocked uninterruptibly in
+        // IOAcceleratorFamily2 (called from IOGraphicsFamily) ~10 s after display sleep, and the watchdog killed it at
+        // 40 s (2026-11-22 05:07, both with hidpi1 and hidpi2). The timer costs a few wakeups per frame, nothing on the GPU.
+        if (me->fStopping) return;
+        const uint64_t at = mach_absolute_time(), due = me->fVblNext;
+        uint64_t near; nanoseconds_to_absolutetime(50000, &near);
+        if (gVblStaged && due > at + near) { thread_call_enter_delayed(me->fVblTimer, due); return; }   // an early stage
+        if (due && at > due) {
+            uint64_t ns; absolutetime_to_nanoseconds(at - due, &ns);
+            const SInt64 us = (SInt64)(ns / 1000);
+            OSAddAtomic64(us, &gVblLateUsSum);
+            if (us > gVblLateUsMax) gVblLateUsMax = us;
+        }
+        OSAddAtomic64(1, &gVblN);
+        gPhxVblLastAbs = due ? due : at;   // the vblank this tick stands for
+        __atomic_add_fetch(&gPhxVblSeq, 1, __ATOMIC_RELEASE);
+        for (const Irq &q : me->fVbl) {
+            const IOFBInterruptProc proc = __atomic_load_n(&q.proc, __ATOMIC_ACQUIRE);
+            if (proc) proc(q.target, q.ref);
+        }
+        uint64_t period; nanoseconds_to_absolutetime(me->fFrameNs, &period);
+        const uint64_t now = mach_absolute_time();
+        me->fVblNext = (me->fVblNext && me->fVblNext + period > now) ? me->fVblNext + period : now + period;
+        uint64_t lead; nanoseconds_to_absolutetime(1500000, &lead);
+        thread_call_enter_delayed(me->fVblTimer, gVblStaged ? me->fVblNext - lead : me->fVblNext);
+    }
+
+    // The firmware lit the panel at its native refresh, which the VBL timer and the mode must report: they said 60 Hz while
+    // the panel scanned at 120 (OTG frame counter: 392 frames in 3.28 s), and WindowServer composited at 60 fps (2026-10-20).
+    // Read-only: OTG0's H/V totals (DCN 3.1.4: segment 2 base 0x34c0 + 0x1b2a / 0x1b2f) and its frame counter (+0x1b4c)
+    // over ~200 ms, snapped to a standard rate when within 2 %.
+    void measureRefresh() {
+        IOMemoryMap *mm = fPCI ? fPCI->mapDeviceMemoryWithRegister(kIOPCIConfigBaseAddress5) : nullptr;
+        if (!mm || mm->getLength() < 0x5100u * 4) { OSSafeReleaseNULL(mm); PFBLOG("refresh: no MMIO view, 60 Hz assumed"); return; }
+        volatile uint32_t *r = (volatile uint32_t *)mm->getVirtualAddress();
+        const uint32_t ctl = r[0x34c0 + 0x1b41], ht = r[0x34c0 + 0x1b2a] + 1, vt = r[0x34c0 + 0x1b2f] + 1;
+        const uint32_t c0 = r[0x34c0 + 0x1b4c] & 0xffffff; const uint64_t t0 = mach_absolute_time();
+        IOSleep(200);
+        const uint32_t c1 = r[0x34c0 + 0x1b4c] & 0xffffff; const uint64_t t1 = mach_absolute_time();
+        mm->release();
+        uint64_t ns; absolutetime_to_nanoseconds(t1 - t0, &ns);
+        const uint32_t frames = (c1 - c0) & 0xffffff;
+        if (!(ctl & 1) || !ns || frames < 4 || ht < 100 || vt < 100) { PFBLOG("refresh: OTG0 not running (ctl 0x%x, %u frames), 60 Hz assumed", ctl, frames); return; }
+        uint32_t mhz = (uint32_t)(((uint64_t)frames * 1000000000000ull) / ns);
+        static const uint32_t kStd[] = { 48000, 50000, 60000, 75000, 90000, 100000, 120000, 144000, 165000, 240000 };
+        for (uint32_t k : kStd) if (mhz > k * 49 / 50 && mhz < k * 51 / 50) { mhz = k; break; }
+        if (mhz < 24000 || mhz > 360000) { PFBLOG("refresh: %u mHz measured, out of range - 60 Hz assumed", mhz); return; }
+        fRefreshMilliHz = mhz; fHTotal = ht; fVTotal = vt;
+        fFrameNs = 1000000000000ull / mhz;
+        PFBLOG("refresh: OTG0 %ux%u totals, %u frames in %llu us -> %u.%03u Hz", ht, vt, frames, ns / 1000, mhz / 1000, mhz % 1000);
+    }
+
+public:
+    // the backlight as 0..kBlMax of full duty; false without a running PWM
+    bool backlightRead(uint32_t *level) {
+        if (!fMmio || !level) return false;
+        volatile uint32_t *r = (volatile uint32_t *)fMmio->getVirtualAddress();
+        const uint32_t pc = r[kBlPeriod], period = pc & 0xffff, bits = (pc >> 16) & 0xf, cntl = r[kBlCntl];
+        const uint64_t full = bits ? ((uint64_t)0x10000 * period) >> bits : 0;
+        if (!full || !(cntl >> 31)) return false;
+        const uint64_t l = (uint64_t)(cntl & 0xffff) * kBlMax / full;
+        *level = l > kBlMax ? kBlMax : (uint32_t)l;
+        return true;
+    }
+    // level 0 is dark, as on a MacBook: AppleBacklightDisplay puts the panel to sleep with brightness 0
+    bool backlightWrite(uint32_t level) {
+        if (!fMmio) return false;
+        volatile uint32_t *r = (volatile uint32_t *)fMmio->getVirtualAddress();
+        if (level > kBlMax) level = kBlMax;
+        uint64_t frac = (uint64_t)level * 0x10000 / kBlMax;   // 16.16
+        if (level && frac < 0x10000 / 100) frac = 0x10000 / 100;   // above dark, at least 1 % of full duty
+        bool any = false;
+        for (uint32_t q : kBlSeqs) {
+            const uint32_t pc = r[kBlPeriod + q], period = pc & 0xffff, bits = (pc >> 16) & 0xf;
+            if (!period || !bits || !(r[kBlCntl + q] >> 31)) continue;
+            const uint64_t duty = frac * period;
+            uint32_t cnt = (uint32_t)((duty >> bits) & 0xffff) + (uint32_t)((duty >> (bits - 1)) & 1);
+            if (cnt > 0xffff) cnt = 0xffff;
+            r[kBlLock + q] = r[kBlLock + q] | 0x80000000u | 1u;                 // IGNORE_MASTER_LOCK_EN, REG_LOCK
+            r[kBlCntl + q] = (r[kBlCntl + q] & ~0xffffu) | cnt;                 // BL_ACTIVE_INT_FRAC_CNT
+            r[kBlLock + q] = (r[kBlLock + q] | 0x80000000u) & ~1u;
+            for (int i = 0; i < 100 && (r[kBlLock + q] & 0x100); i++) IODelay(100);   // REG_UPDATE_PENDING
+            any = true;
+        }
+        if (level == 0) {
+            r[kBlPwrSeq] = r[kBlPwrSeq] & ~1u;   // cut PANEL_BLON
+        } else {
+            r[kBlPwrSeq] = r[kBlPwrSeq] | 1u;    // enable PANEL_BLON
+        }
+        return any;
+    }
+    // Display sleep left the backlight lit over a black or torn frame (2026-10-25). Besides brightness 0, a connection
+    // powered down goes dark and gets its level back on power-up; a brightness set while dark waits.
+    bool fBlDark = false;
+    uint32_t fBlSaved = kBlMax;
+    bool backlightSet(uint32_t level) {
+        if (fBlDark) { fBlSaved = level > kBlMax ? kBlMax : level; return true; }
+        return backlightWrite(level);
+    }
+    void displayPower(bool on) {
+        if (!fBacklight || on == !fBlDark) return;
+        if (!on) {
+            backlightRead(&fBlSaved);
+            if (!fBlSaved) fBlSaved = kBlMax;
+            fBlDark = true;
+            backlightWrite(0);
+        } else {
+            fBlDark = false;
+            fVblNext = 0;
+            backlightWrite(fBlSaved ? fBlSaved : kBlMax);
+            if (fVblTimer) {
+                uint64_t d; clock_interval_to_deadline((uint32_t)(fFrameNs / 1000), kMicrosecondScale, &d);
+                fVblNext = d;
+                thread_call_enter_delayed(fVblTimer, d);
+            }
+        }
+        if (fBacklight) fBacklight->setProperty("PhxDark", fBlDark);
+        PFBLOG("backlight: display power %s, level %u", on ? "on" : "off", fBlSaved);
+    }
+    bool backlightDark() const { return fBlDark; }
+    // which calls reach the panel, newest first, as the registry property PhxTrace (the brightness slider moved and no
+    // brightness parameter arrived, 2026-10-25); the log does not reach the unified log
+    char fTrace[16][48] = {}; unsigned fTraceN = 0;
+    void trace(const char *what, uint32_t a, uint64_t v) {
+        char line[48]; snprintf(line, sizeof line, "%s %c%c%c%c=0x%llx", what, (char)(a >> 24), (char)(a >> 16), (char)(a >> 8), (char)a,
+                                (unsigned long long)v);
+        if (fTraceN && !strcmp(line, fTrace[(fTraceN - 1) % 16])) return;   // repeats of the last call
+        strlcpy(fTrace[fTraceN++ % 16], line, sizeof fTrace[0]);
+        char all[16 * 48 + 16] = ""; for (unsigned i = 0; i < 16 && i < fTraceN; i++) { strlcat(all, fTrace[(fTraceN - 1 - i) % 16], sizeof all); strlcat(all, "; ", sizeof all); }
+        setProperty("PhxTrace", all);
+    }
+    // the built-in panel is a TFT: AppleBacklightDisplay then drives it (brightness, dimming), as on a MacBook
+    IOReturn getAppleSense(IOIndex idx, UInt32 *senseType, UInt32 *primary, UInt32 *extended, UInt32 *displayType) override {
+        if (idx == 0) {
+            if (!fBacklight) return kIOReturnUnsupported;
+            if (senseType) *senseType = 0;
+            if (primary) *primary = 0;
+            if (extended) *extended = 0;
+            if (displayType) *displayType = 2;   // kPanelTFTConnect (IOMacOSVideo.h, the NDRV headers)
+            return kIOReturnSuccess;
+        }
+        return kIOReturnUnsupported;
+    }
+    bool start(IOService *provider) override;
+    void stop(IOService *provider) override;
+    IOReturn enableController() override { return kIOReturnSuccess; }
+    bool isConsoleDevice() override { return !fBeside; }
+    IODeviceMemory *getApertureRange(IOPixelAperture aperture) override {
+        if (aperture != kIOFBSystemAperture) return nullptr;
+        return IODeviceMemory::withRange(fBase, (IOPhysicalLength)fRowBytes * fHeight);
+    }
+    IODeviceMemory *getVRAMRange() override { return getApertureRange(kIOFBSystemAperture); }
+    const char *getPixelFormats() override { return IO32BitDirectPixels "\0"; }
+    IOItemCount getDisplayModeCount() override { return 1 + (fDetailed ? fDetailed->getCount() : 0); }
+    IOReturn getDisplayModes(IODisplayModeID *modes) override {
+        if (!modes) return kIOReturnBadArgument;
+        modes[0] = 1;
+        for (uint32_t i = 0; fDetailed && i < fDetailed->getCount(); i++) modes[1 + i] = (IODisplayModeID)(kDetailedBase + i);
+        return kIOReturnSuccess;
+    }
+    IOReturn getInformationForDisplayMode(IODisplayModeID mode, IODisplayModeInformation *info) override {
+        if (!modeKnown(mode) || !info) return kIOReturnBadArgument;
+        bzero(info, sizeof(*info));
+        info->maxDepthIndex = 0; info->nominalWidth = fWidth; info->nominalHeight = fHeight;
+        info->refreshRate = (IOFixed1616)(((uint64_t)fRefreshMilliHz << 16) / 1000);
+        info->flags = kDisplayModeValidFlag | kDisplayModeSafeFlag | kFramebufferSupportsGammaCorrection;
+        if (mode == 1) info->flags |= kDisplayModeDefaultFlag;
+        return kIOReturnSuccess;
+    }
+    UInt64 getPixelFormatsForDisplayMode(IODisplayModeID, IOIndex) override { return 0; }
+    IOReturn getPixelInformation(IODisplayModeID mode, IOIndex depth, IOPixelAperture aperture, IOPixelInformation *pi) override {
+        if (!modeKnown(mode) || depth != 0 || aperture != kIOFBSystemAperture || !pi) return kIOReturnUnsupportedMode;
+        bzero(pi, sizeof(*pi));
+        pi->bytesPerRow = fRowBytes; pi->bitsPerPixel = 32; pi->pixelType = kIORGBDirectPixels;
+        pi->componentCount = 3; pi->bitsPerComponent = 8;
+        pi->componentMasks[0] = 0x00FF0000; pi->componentMasks[1] = 0x0000FF00; pi->componentMasks[2] = 0x000000FF;
+        strlcpy(pi->pixelFormat, IO32BitDirectPixels, sizeof(pi->pixelFormat));
+        pi->activeWidth = fWidth; pi->activeHeight = fHeight;
+        return kIOReturnSuccess;
+    }
+    IOReturn getCurrentDisplayMode(IODisplayModeID *mode, IOIndex *depth) override { if (mode) *mode = fCurMode; if (depth) *depth = 0; return kIOReturnSuccess; }
+    IOReturn getStartupDisplayMode(IODisplayModeID *mode, IOIndex *depth) override { if (mode) *mode = 1; if (depth) *depth = 0; return kIOReturnSuccess; }
+    // [port] every accepted mode scans out the same native frame: switching modes only records which one is current
+    IOReturn setDisplayMode(IODisplayModeID mode, IOIndex depth) override {
+        if (!modeKnown(mode) || depth != 0) return kIOReturnUnsupported;
+        if (mode != fCurMode) PFBLOG("mode: 0x%x -> 0x%x (same %ux%u scan-out)", (uint32_t)fCurMode, (uint32_t)mode, fWidth, fHeight);
+        fCurMode = mode;
+        setProperty("PhxHiDPICurrentMode", (uint32_t)mode, 32);
+        return kIOReturnSuccess;
+    }
+    IOReturn getTimingInfoForDisplayMode(IODisplayModeID mode, IOTimingInformation *info) override {
+        if (!modeKnown(mode) || !info) return kIOReturnUnsupportedMode;
+        bzero(info, sizeof(*info));
+        info->appleTimingID = kIOTimingIDInvalid;   // the panel keeps the firmware's timing; this only describes it
+        if (const IODetailedTimingInformationV2 *t = detailedFor(mode)) {
+            info->detailedInfo.v2 = *t;
+            info->flags = kIODetailedTimingValid | ((t->horizontalScaled || t->verticalScaled) ? kIOScalingInfoValid : 0);
+        } else {
+            nativeTiming(&info->detailedInfo.v2);
+            info->flags = kIODetailedTimingValid;
+        }
+        return kIOReturnSuccess;
+    }
+    IOReturn validateDetailedTiming(void *description, IOByteCount size) override {
+        const IODetailedTimingInformationV2 *t = timingFrom(description, size);
+        if (!t) return kIOReturnBadArgument;
+        const bool ok = detailedFits(t);
+        PFBLOG("validate: active %ux%u scaled %ux%u -> %s", t->horizontalActive, t->verticalActive, t->horizontalScaled,
+               t->verticalScaled, ok ? "ok" : "unsupported");
+        {   // [port] round 2: visible in ioreg (PhxFB IOLog does not reach dmesg here)
+            char s[128];
+            snprintf(s, sizeof s, "size %u active %ux%u scaled %ux%u flags 0x%x -> %s", (uint32_t)size, t->horizontalActive, t->verticalActive,
+                     t->horizontalScaled, t->verticalScaled, t->scalerFlags, ok ? "ok" : "unsupported");
+            setProperty("PhxHiDPILastValidate", s);
+            fValidateCalls++; setProperty("PhxHiDPIValidateCalls", fValidateCalls, 32);
+            // [port] round 4: every distinct request (scaled size, scaler flags, and the mode-info half of the
+            // description: nominal size and flags), to see how the OS asks for HiDPI
+            uint32_t inom_w = 0, inom_h = 0, iflags = 0;
+            if (size >= sizeof(IOFBDisplayModeDescription)) {
+                const IOFBDisplayModeDescription *md = (const IOFBDisplayModeDescription *)description;
+                inom_w = md->info.nominalWidth; inom_h = md->info.nominalHeight; iflags = md->info.flags;
+            }
+            char e[96];
+            snprintf(e, sizeof e, "%ux%u sf=0x%x nom=%ux%u if=0x%x", t->horizontalScaled, t->verticalScaled, t->scalerFlags,
+                     inom_w, inom_h, iflags);
+            if (!fValidateSeen) fValidateSeen = OSArray::withCapacity(16);
+            bool dup = false;
+            for (uint32_t i = 0; fValidateSeen && i < fValidateSeen->getCount(); i++) {
+                OSString *o = OSDynamicCast(OSString, fValidateSeen->getObject(i));
+                if (o && o->isEqualTo(e)) { dup = true; break; }
+            }
+            if (fValidateSeen && !dup && fValidateSeen->getCount() < 64) {
+                if (OSString *o = OSString::withCString(e)) { fValidateSeen->setObject(o); o->release(); }
+                // a collection handed to the registry must never change again (round 4 panicked here:
+                // "Trying to change a collection in the registry"): publish a fresh copy each time
+                if (OSArray *pub = OSArray::withArray(fValidateSeen)) { setProperty("PhxHiDPIRequests", pub); pub->release(); }
+            }
+        }
+        return ok ? kIOReturnSuccess : kIOReturnUnsupportedMode;
+    }
+    IOReturn setDetailedTimings(OSArray *array) override {
+        OSArray *copy = array ? OSArray::withArray(array) : nullptr;
+        OSArray *old = fDetailed;
+        fDetailed = copy;
+        OSSafeReleaseNULL(old);
+        if (!modeKnown(fCurMode)) fCurMode = 1;
+        PFBLOG("detailed timings: %u installed", fDetailed ? fDetailed->getCount() : 0);
+        fDetailedCalls++; setProperty("PhxHiDPIDetailedCalls", fDetailedCalls, 32);
+        setProperty("PhxHiDPIDetailedInstalled", fDetailed ? fDetailed->getCount() : 0, 32);
+        return kIOReturnSuccess;
+    }
+    IOItemCount getConnectionCount() override { return 1; }
+    // [port] round 5: a synthesized EDID for the eDP panel (the firmware hands over no EDID, so macOS saw an
+    // "unknown" display with no physical size). Vendor "FRW" product 1, the native timing measured on OTG0, and the
+    // 13.5" 3:2 panel's image size (285 x 190 mm), so WindowServer can tell it is a ~201 ppi built-in panel.
+    bool hasDDCConnect(IOIndex idx) override { return idx == 0; }
+    IOReturn getDDCBlock(IOIndex idx, UInt32 block, IOSelect select, IOOptionBits options, UInt8 *data, IOByteCount *length) override {
+        if (idx != 0 || block != 0 || !data || !length) return kIOReturnBadArgument;
+        uint8_t e[128];
+        bzero(e, sizeof e);
+        static const uint8_t kHdr[8] = { 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00 };
+        bcopy(kHdr, e, 8);
+        const uint16_t mfg = (uint16_t)((('F' - '@') << 10) | (('R' - '@') << 5) | ('W' - '@'));   // "FRW"
+        e[8] = (uint8_t)(mfg >> 8); e[9] = (uint8_t)mfg;
+        e[10] = 0x01; e[11] = 0x00;          // product 1
+        e[16] = 1; e[17] = 2023 - 1990;      // week 1 of 2023
+        e[18] = 1; e[19] = 4;                // EDID 1.4
+        e[20] = 0xA5;                        // digital, 8 bits per color, DisplayPort
+        e[21] = 29; e[22] = 19;              // image size in cm
+        e[23] = 120;                         // gamma 2.2
+        e[24] = 0x02;                        // RGB 4:4:4, the preferred timing is the native mode
+        static const uint8_t kChroma[10] = { 0xEE, 0x91, 0xA3, 0x54, 0x4C, 0x99, 0x26, 0x0F, 0x50, 0x54 };   // sRGB
+        bcopy(kChroma, e + 25, 10);
+        for (int i = 38; i < 54; i++) e[i] = 0x01;   // no standard timings
+        IODetailedTimingInformationV2 t;
+        nativeTiming(&t);
+        uint8_t *d = e + 54;                 // detailed timing descriptor 1: the native mode
+        const uint32_t pc = (uint32_t)(t.pixelClock / 10000);
+        const uint32_t ha = t.horizontalActive, hb = t.horizontalBlanking, va = t.verticalActive, vb = t.verticalBlanking;
+        const uint32_t hso = t.horizontalSyncOffset, hsw = t.horizontalSyncPulseWidth, vso = t.verticalSyncOffset, vsw = t.verticalSyncPulseWidth;
+        const uint32_t hmm = 285, vmm = 190;
+        d[0] = (uint8_t)pc; d[1] = (uint8_t)(pc >> 8);
+        d[2] = (uint8_t)ha; d[3] = (uint8_t)hb; d[4] = (uint8_t)(((ha >> 8) & 0xF) << 4 | ((hb >> 8) & 0xF));
+        d[5] = (uint8_t)va; d[6] = (uint8_t)vb; d[7] = (uint8_t)(((va >> 8) & 0xF) << 4 | ((vb >> 8) & 0xF));
+        d[8] = (uint8_t)hso; d[9] = (uint8_t)hsw; d[10] = (uint8_t)(((vso & 0xF) << 4) | (vsw & 0xF));
+        d[11] = (uint8_t)((((hso >> 8) & 3) << 6) | (((hsw >> 8) & 3) << 4) | (((vso >> 4) & 3) << 2) | ((vsw >> 4) & 3));
+        d[12] = (uint8_t)hmm; d[13] = (uint8_t)vmm; d[14] = (uint8_t)((((hmm >> 8) & 0xF) << 4) | ((vmm >> 8) & 0xF));
+        d[17] = 0x1E;                        // digital separate sync, +hsync +vsync
+        uint8_t *n = e + 72;                 // descriptor 2: monitor name
+        n[3] = 0xFC;
+        static const char kName[13] = { 'F','r','a','m','e','w','o','r','k',' ','1','3','\n' };
+        bcopy(kName, n + 5, 13);
+        e[90 + 3] = 0x10; e[108 + 3] = 0x10;   // descriptors 3 and 4: dummy
+        uint8_t sum = 0;
+        for (int i = 0; i < 127; i++) sum += e[i];
+        e[127] = (uint8_t)(0x100 - sum);
+        const IOByteCount copyLen = *length < 128 ? *length : 128;
+        bcopy(e, data, copyLen);
+        *length = copyLen;
+        fEdidReads++; setProperty("PhxEDIDReads", fEdidReads, 32);
+        return kIOReturnSuccess;
+    }
+    // (the upstream stub "getDDCBlock -> kIOReturnUnsupported" was here; replaced by the synthesized EDID above)
+    IOReturn registerForInterruptType(IOSelect type, IOFBInterruptProc proc, OSObject *target, void *ref, void **iref) override {
+        if (type == kIOFBVBLInterruptType) {
+            for (Irq &q : fVbl) if (!q.proc) {
+                q.target = target; q.ref = ref; __atomic_store_n(&q.proc, proc, __ATOMIC_RELEASE);
+                PFBLOG("VBL handler %u: %s", (unsigned)(&q - fVbl), target ? target->getMetaClass()->getClassName() : "(no target)");
+                if (iref) *iref = &q;
+                return kIOReturnSuccess;
+            }
+            PFBLOG("VBL handler refused: all %u taken", (unsigned)(sizeof fVbl / sizeof fVbl[0]));
+            return kIOReturnNoResources;
+        }
+        if (type == kIOFBConnectInterruptType) { fConnect = { proc, target, ref }; if (iref) *iref = &fConnect; return kIOReturnSuccess; }
+        return kIOReturnUnsupported;
+    }
+    IOReturn unregisterInterrupt(void *iref) override {
+        for (Irq &q : fVbl) if (iref == &q) __atomic_store_n(&q.proc, (IOFBInterruptProc)nullptr, __ATOMIC_RELEASE);
+        return kIOReturnSuccess;
+    }
+    IOReturn setInterruptState(void *, UInt32) override { return kIOReturnSuccess; }
+    IOReturn setGammaTable(UInt32, UInt32, UInt32, void *) override { return kIOReturnSuccess; }
+    IOReturn setGammaTable(UInt32, UInt32, UInt32, void *, bool) override { return kIOReturnSuccess; }
+    IOReturn setCLUTWithEntries(IOColorEntry *, UInt32, UInt32, IOOptionBits) override { return kIOReturnSuccess; }
+    IOReturn setApertureEnable(IOPixelAperture, IOOptionBits) override { return kIOReturnSuccess; }
+    IOReturn setStartupDisplayMode(IODisplayModeID, IOIndex) override { return kIOReturnSuccess; }
+    IOCommandGate *fWakeGate = nullptr;
+    bool fSysSlept = false;
+
+    void familyDidWake() {
+        IOWorkLoop *wl = getWorkLoop();
+        if (!fWakeGate && wl) {
+            fWakeGate = IOCommandGate::commandGate(this);
+            if (fWakeGate && wl->addEventSource(fWakeGate) != kIOReturnSuccess) OSSafeReleaseNULL(fWakeGate);
+        }
+        if (!fWakeGate) {
+            PFBLOG("system wake: no command gate on workloop, delivering direct");
+            deliverFramebufferNotification(kIOFBNotifyDidWake, (void *)true);
+            deliverFramebufferNotification(kIOFBNotifyDidWake, (void *)false);
+            deliverFramebufferNotification(kIOFBNotifyDidPowerOn, (void *)false);
+            pagingState = true;
+            return;
+        }
+        fWakeGate->runAction(OSMemberFunctionCast(IOCommandGate::Action, this, &PhxAMDFB::familyDidWakeGated));
+    }
+
+    IOReturn familyDidWakeGated(void *, void *, void *, void *) {
+        deliverFramebufferNotification(kIOFBNotifyDidWake, (void *)true);
+        deliverFramebufferNotification(kIOFBNotifyDidWake, (void *)false);
+        deliverFramebufferNotification(kIOFBNotifyDidPowerOn, (void *)false);
+        pagingState = true;
+        if (fWakeGate) fWakeGate->commandWakeup(&fServerConnect, false);
+        PFBLOG("system wake: clients told DidWake, pagingState on, WindowServer woken");
+        return kIOReturnSuccess;
+    }
+
+    // power and connection answers: acknowledge at once, never queue on the controller thread.
+    // On wake, deliver DidWake, set pagingState, and wake WindowServer sleeping on fServerConnect.
+    IOReturn setPowerState(unsigned long ordinal, IOService *) override {
+        displayPower(ordinal != 0);
+        if (ordinal) {
+            if (!pagingState && fSysSlept) { fSysSlept = false; familyDidWake(); }
+            else handleEvent(kIOFBNotifyDidPowerOn);
+        } else {
+            fSysSlept = true;
+            handleEvent(kIOFBNotifyWillPowerOff);
+        }
+        return kIOPMAckImplied;
+    }
+    IOReturn setAttribute(IOSelect attribute, uintptr_t value) override {
+        trace("attr", attribute, value);
+        if (attribute == kIOWindowServerActiveAttribute) return kIOReturnSuccess;
+        if (attribute == kIOPowerAttribute) {
+            displayPower(value != 0);
+            if (value) {
+                if (!pagingState && fSysSlept) { fSysSlept = false; familyDidWake(); }
+                else handleEvent(kIOFBNotifyDidPowerOn);
+                return kIOReturnSuccess;
+            }
+            fSysSlept = true;
+            handleEvent(kIOFBNotifyWillPowerOff);
+            return kIOReturnSuccess;
+        }
+        return IOFramebuffer::setAttribute(attribute, value);
+    }
+    IOReturn getAttribute(IOSelect attribute, uintptr_t *value) override {
+        if (attribute == kIOWindowServerActiveAttribute) { if (value) *value = 1; return kIOReturnSuccess; }
+        return IOFramebuffer::getAttribute(attribute, value);
+    }
+    IOReturn setAttributeForConnection(IOIndex idx, IOSelect attribute, uintptr_t value) override {
+        trace("conn", attribute, value);
+        switch (attribute) {
+        case kConnectionPower:
+            displayPower(value != 0);
+            return kIOReturnSuccess;
+        case kConnectionColorModesSupported: case kConnectionColorDepthsSupported:
+        case kConnectionControllerColorDepth: case kConnectionControllerDepthsSupported: case kConnectionColorMode:
+        case kConnectionDisplayFlags: case kConnectionFlags:
+            return kIOReturnSuccess;
+        default: return IOFramebuffer::setAttributeForConnection(idx, attribute, value);
+        }
+    }
+    IOReturn getAttributeForConnection(IOIndex idx, IOSelect attr, uintptr_t *value) override {
+        if (idx >= 2 || !value) return kIOReturnBadArgument;
+        if (idx == 0) {
+            switch (attr) {
+            case kConnectionEnable: case kConnectionCheckEnable: *value = 1; return kIOReturnSuccess;
+            case kConnectionFlags: *value = kIOConnectionBuiltIn; return kIOReturnSuccess;
+            case kConnectionColorModesSupported: case kConnectionColorMode: *value = 0x00000001; return kIOReturnSuccess;
+            case kConnectionColorDepthsSupported: case kConnectionControllerColorDepth: case kConnectionControllerDepthsSupported:
+                *value = 0x00000002; return kIOReturnSuccess;
+            default: return IOFramebuffer::getAttributeForConnection(idx, attr, value);
+            }
+        } else {
+            switch (attr) {
+            case kConnectionEnable: case kConnectionCheckEnable: *value = 1; return kIOReturnSuccess;
+            case kConnectionFlags: *value = 0; return kIOReturnSuccess;
+            case kConnectionSupportsHLDDCSense: case kConnectionSupportsLLDDCSense:
+                *value = 1; return kIOReturnSuccess;
+            case kConnectionColorModesSupported: case kConnectionColorMode: *value = 0x00000001; return kIOReturnSuccess;
+            case kConnectionColorDepthsSupported: case kConnectionControllerColorDepth: case kConnectionControllerDepthsSupported:
+                *value = 0x00000002; return kIOReturnSuccess;
+            default: return IOFramebuffer::getAttributeForConnection(idx, attr, value);
+            }
+        }
+    }
+    IOReturn connectFlags(IOIndex connectIndex, IODisplayModeID mode, IOOptionBits *flags) override {
+        if (!flags) return kIOReturnBadArgument;
+        *flags = 0;
+        if (connectIndex == 0 && mode == 1) {
+            *flags = kDisplayModeValidFlag | kDisplayModeSafeFlag | kDisplayModeDefaultFlag;
+        } else if (connectIndex == 1 && mode == 2) {
+            *flags = kDisplayModeValidFlag | kDisplayModeSafeFlag | kDisplayModeDefaultFlag;
+        }
+        return kIOReturnSuccess;
+    }
+    // The accelerator's display pipe asks for the scan-out: its CPU mapping (frames are copied in) and its physical
+    // address in the GPU's VRAM aperture. With no address the pipe got no framebuffer resource, and IOAcceleratorFamily
+    // marks a display pipe active only once one exists (init_framebuffer_resource sets +0x298): every WindowServer
+    // transaction ended kIOReturnNotReady and no frame reached the panel (2026-10-20).
+    // The scan-out through the carve-out, once PhxBringup has published where the carve-out sits (phx-fb-phys) and only
+    // if that view holds the pixels the BAR shows. NULL (copy through the BAR) until then.
+    IOMemoryMap *aliasMap() {
+        if (fAliasMap || fAliasTries >= 3) return fAliasMap;
+        if (!OSCompareAndSwap(0, 1, &fAliasBusy)) return nullptr;
+        if (!fAliasMap && fAliasTries < 3) {
+            fAliasTries++;
+            uint64_t fbPhys = 0, barOff = ~0ull;
+            if (OSIterator *it = fPCI->getChildIterator(gIOServicePlane)) {
+                while (OSObject *o = it->getNextObject()) {
+                    IORegistryEntry *e = OSDynamicCast(IORegistryEntry, o);
+                    OSNumber *n = e ? OSDynamicCast(OSNumber, e->getProperty("phx-fb-phys")) : nullptr;
+                    if (n) { fbPhys = n->unsigned64BitValue(); break; }
+                }
+                it->release();
+            }
+            for (uint32_t i = 0; i < fPCI->getDeviceMemoryCount(); i++) {
+                IODeviceMemory *dm = fPCI->getDeviceMemoryWithIndex(i);
+                if (dm && fBase >= dm->getPhysicalAddress() && fBase - dm->getPhysicalAddress() < dm->getLength()) {
+                    barOff = fBase - dm->getPhysicalAddress();
+                    break;
+                }
+            }
+            const uint64_t phys = fbPhys + barOff, bytes = (uint64_t)fRowBytes * fHeight;
+            IOMemoryMap *m = nullptr;
+            if (fbPhys && barOff != ~0ull)
+                if (IODeviceMemory *dm = IODeviceMemory::withRange(phys, bytes)) { m = dm->map(kIOMapWriteCombineCache); dm->release(); }
+            if (m) {
+                const volatile uint32_t *a = (const volatile uint32_t *)m->getVirtualAddress();
+                const volatile uint32_t *b = (const volatile uint32_t *)fSurfMap->getVirtualAddress();
+                const uint64_t words = bytes / 4, step = words / 4096 ? words / 4096 : 1;
+                unsigned same = 0, nz = 0, n = 0;
+                for (uint64_t w = 0; w < words; w += step, n++) { const uint32_t x = a[w], y = b[w]; same += x == y; nz += y != 0; }
+                PFBLOG("alias: scan-out at BAR offset 0x%llx = system RAM 0x%llx: %u of %u samples match the BAR (%u non-zero)",
+                       barOff, phys, same, n, nz);
+                if (same == n && nz) fAliasMap = m; else m->release();
+            } else {
+                PFBLOG("alias: carve-out 0x%llx, scan-out BAR offset 0x%llx: no system-RAM view, copying through the BAR", fbPhys, barOff);
+            }
+        }
+        fAliasBusy = 0;
+        return fAliasMap;
+    }
+    IOReturn callPlatformFunction(const OSSymbol *fn, bool wait, void *p1, void *p2, void *p3, void *p4) override {
+        if (fn && fn->isEqualTo(NVRM_VRAM_FN_SCANOUT)) {
+            NVRMVramRequest *r = (NVRMVramRequest *)p1;
+            if (!r || r->version != NVRM_VRAM_ABI_VERSION) return kIOReturnBadArgument;
+            if (!fSurfMap) return kIOReturnNotReady;
+            IOMemoryMap *alias = gAlias ? aliasMap() : nullptr;
+            r->kva = (void *)(alias ? alias : fSurfMap)->getVirtualAddress();
+            r->phys = fBase; r->actualSize = round_page_64((uint64_t)fRowBytes * fHeight);
+            r->width = fWidth; r->height = fHeight; r->pitch = fRowBytes;
+            return kIOReturnSuccess;
+        }
+        if (fn && fn->isEqualTo(NVRM_VRAM_FN_ALLOC)) {
+            return vramAlloc((NVRMVramRequest *)p1);
+        }
+        if (fn && fn->isEqualTo(NVRM_VRAM_FN_FREE)) {
+            return vramFree((NVRMVramRequest *)p1);
+        }
+        if (fn && (fn->isEqualTo("nvFlipToSurfacePure") || fn->isEqualTo(NVRM_FLIP_FN))) {
+            struct NVRMFlipRequest *f = (struct NVRMFlipRequest *)p1;
+            if (!f || f->version != NVRM_FLIP_ABI_VERSION) return kIOReturnBadArgument;
+            const bool home = (f->flags & 1u) != 0;
+            uint64_t phys = (uint64_t)fBase;
+            if (!home && f->kapiMemory) {
+                IOMemoryDescriptor *md = OSDynamicCast(IOMemoryDescriptor, (OSObject *)f->kapiMemory);
+                if (md) phys = (uint64_t)md->getPhysicalSegment(0, nullptr, kIOMemoryMapperNone);
+                else return kIOReturnBadArgument;
+            }
+            if (fMmio) {
+                volatile uint32_t *r = (volatile uint32_t *)fMmio->getVirtualAddress();
+                const uint32_t hubpOff = 0;
+                r[0x34c0 + hubpOff + 0x060b] = (uint32_t)(phys >> 32);
+                r[0x34c0 + hubpOff + 0x060a] = (uint32_t)phys;
+                if (!home && f->pitch >= 4) {
+                    r[0x34c0 + hubpOff + 0x0607] = f->pitch / 4;
+                } else {
+                    r[0x34c0 + hubpOff + 0x0607] = fRowBytes / 4;
+                }
+            }
+            f->flipResult = 0;
+            return kIOReturnSuccess;
+        }
+        if (fn && (fn->isEqualTo(NVRM_GPUVA_FN_HANDLES) || fn->isEqualTo(NVRM_GPUVA_FN_ALLOC) || fn->isEqualTo(NVRM_GPUVA_FN_MAP) ||
+                   fn->isEqualTo(NVRM_GPUVA_FN_FREE))) {
+            return rmCall(fn, p1);
+        }
+        return IOFramebuffer::callPlatformFunction(fn, wait, p1, p2, p3, p4);
+    }
+};
+
+OSDefineMetaClassAndStructors(PhxAMDFB, IOFramebuffer)
+
+IOService *gPhxHDMI = nullptr;
+
+class PhxHDMINub : public IOService {
+    OSDeclareDefaultStructors(PhxHDMINub)
+public:
+    bool attach(IOService *provider) override { return IOService::attach(provider); }
+};
+OSDefineMetaClassAndStructors(PhxHDMINub, IOService)
+
+class PhxHDMIHead : public IOFramebuffer {
+    OSDeclareDefaultStructors(PhxHDMIHead)
+public:
+    PhxAMDFB *fPrimary = nullptr;
+    IOPhysicalAddress fBase = 0;
+    IOMemoryMap *fMmio = nullptr;
+    IOMemoryMap *fSurfMap = nullptr;
+    thread_call_t fVblTimer = nullptr;
+    uint64_t fVblNext = 0;
+    struct Irq { IOFBInterruptProc proc = nullptr; OSObject *target = nullptr; void *ref = nullptr; };
+    Irq fVbl[4] = {};
+    Irq fConnect = {};
+
+    static void vblFire(thread_call_param_t p0, thread_call_param_t) {
+        PhxHDMIHead *me = (PhxHDMIHead *)p0;
+        if (!me) return;
+        for (const Irq &q : me->fVbl) {
+            const IOFBInterruptProc proc = __atomic_load_n(&q.proc, __ATOMIC_ACQUIRE);
+            if (proc) proc(q.target, q.ref);
+        }
+        uint64_t period; nanoseconds_to_absolutetime(16666666ull, &period);
+        const uint64_t now = mach_absolute_time();
+        me->fVblNext = (me->fVblNext && me->fVblNext + period > now) ? me->fVblNext + period : now + period;
+        thread_call_enter_delayed(me->fVblTimer, me->fVblNext);
+    }
+
+    void enableHdmiHw() {
+        if (!fMmio) return;
+        volatile uint32_t *r = (volatile uint32_t *)fMmio->getVirtualAddress();
+        r[0x34c0 + 0x218b] = 0x01000000;
+        r[0x34c0 + 0x21b1] = 0x00010100;
+        r[0x34c0 + 0x21b2] = 0x00000101;
+        r[0x34c0 + 0x21d8] = 0x00000011;
+        r[0x34c0 + 0x2094 + 0x100] = 0x00010011;
+        const uint64_t phys1 = (uint64_t)fBase + 0x01000000ull;
+        r[0x34c0 + 0x05c0 + 0x060b] = (uint32_t)(phys1 >> 32);
+        r[0x34c0 + 0x05c0 + 0x060a] = (uint32_t)phys1;
+        r[0x34c0 + 0x05c0 + 0x0607] = 1920;
+    }
+
+    bool start(IOService *provider) override {
+        if (!IOFramebuffer::start(provider)) return false;
+        setProperty("IOFBDependentID", 0x50485846ull << 32 | 2, 64);
+        setProperty("IOFBDependentIndex", 1ull, 32);
+        setProperty("IOFBGammaWidth", 8ull, 32);
+        setProperty("IOFBGammaCount", 256ull, 32);
+        setProperty("DisplayGammaChannels", 3ull, 32);
+        setProperty("DisplayGammaEntryCount", 256ull, 32);
+        setProperty("DisplayGammaEntrySize", 1ull, 32);
+        setProperty("PhxFBWidth", 1920ull, 32);
+        setProperty("PhxFBHeight", 1080ull, 32);
+        setProperty("PhxFBRefreshMilliHz", 60000ull, 32);
+
+        if (IODeviceMemory *sm = IODeviceMemory::withRange(fBase + 0x01000000ull, 16ull * 1024ull * 1024ull)) {
+            fSurfMap = sm->map(kIOMapWriteCombineCache); sm->release();
+        }
+        if (!fSurfMap) {
+            PFBLOG("PhxHDMIHead: failed to map scanout buffer at 0x%llx", (unsigned long long)(fBase + 0x01000000ull));
+            return false;
+        }
+        uint32_t *pix = (uint32_t *)fSurfMap->getVirtualAddress();
+        for (size_t i = 0; i < 1920 * 1080; i++) pix[i] = 0xFF102030;
+
+        fVblTimer = thread_call_allocate(vblFire, this);
+        if (fVblTimer) {
+            uint64_t d; clock_interval_to_deadline(16666, kMicrosecondScale, &d);
+            fVblNext = d; thread_call_enter_delayed(fVblTimer, d);
+        }
+
+        enableHdmiHw();
+        registerService();
+        PFBLOG("PhxHDMIHead: published 1920x1080@60Hz at phys 0x%llx", (unsigned long long)(fBase + 0x01000000ull));
+        return true;
+    }
+
+    IOReturn powerStateWillChangeTo(IOPMPowerFlags, unsigned long, IOService *) override { return IOPMAckImplied; }
+    IOReturn powerStateDidChangeTo(IOPMPowerFlags, unsigned long, IOService *) override { return IOPMAckImplied; }
+
+    void stop(IOService *provider) override {
+        if (fVblTimer) { thread_call_cancel(fVblTimer); while (!thread_call_free(fVblTimer)) { thread_call_cancel(fVblTimer); IOSleep(5); } fVblTimer = nullptr; }
+        OSSafeReleaseNULL(fSurfMap);
+        IOFramebuffer::stop(provider);
+    }
+
+    bool isConsoleDevice() override { return false; }
+    IODeviceMemory *getApertureRange(IOPixelAperture aperture) override {
+        if (aperture != kIOFBSystemAperture) return nullptr;
+        return IODeviceMemory::withRange(fBase + 0x01000000ull, 1920 * 4 * 1080);
+    }
+    IODeviceMemory *getVRAMRange() override { return getApertureRange(kIOFBSystemAperture); }
+    const char *getPixelFormats() override { return IO32BitDirectPixels "\0"; }
+    IOItemCount getDisplayModeCount() override { return 1; }
+    IOReturn getDisplayModes(IODisplayModeID *modes) override { if (modes) modes[0] = 1; return kIOReturnSuccess; }
+    IOReturn getInformationForDisplayMode(IODisplayModeID mode, IODisplayModeInformation *info) override {
+        if (mode != 1 || !info) return kIOReturnBadArgument;
+        bzero(info, sizeof(*info));
+        info->maxDepthIndex = 0; info->nominalWidth = 1920; info->nominalHeight = 1080;
+        info->refreshRate = 60 << 16;
+        info->flags = kDisplayModeValidFlag | kDisplayModeSafeFlag | kDisplayModeDefaultFlag | kFramebufferSupportsGammaCorrection;
+        return kIOReturnSuccess;
+    }
+    UInt64 getPixelFormatsForDisplayMode(IODisplayModeID, IOIndex) override { return 0; }
+    IOReturn getPixelInformation(IODisplayModeID mode, IOIndex depth, IOPixelAperture aperture, IOPixelInformation *pi) override {
+        if (mode != 1 || depth != 0 || aperture != kIOFBSystemAperture || !pi) return kIOReturnUnsupportedMode;
+        bzero(pi, sizeof(*pi));
+        pi->bytesPerRow = 1920 * 4; pi->bitsPerPixel = 32; pi->pixelType = kIORGBDirectPixels;
+        pi->componentCount = 3; pi->bitsPerComponent = 8;
+        pi->componentMasks[0] = 0x00FF0000; pi->componentMasks[1] = 0x0000FF00; pi->componentMasks[2] = 0x000000FF;
+        strlcpy(pi->pixelFormat, IO32BitDirectPixels, sizeof(pi->pixelFormat));
+        pi->activeWidth = 1920; pi->activeHeight = 1080;
+        return kIOReturnSuccess;
+    }
+    IOReturn getCurrentDisplayMode(IODisplayModeID *mode, IOIndex *depth) override { if (mode) *mode = 1; if (depth) *depth = 0; return kIOReturnSuccess; }
+    IOReturn getStartupDisplayMode(IODisplayModeID *mode, IOIndex *depth) override { return getCurrentDisplayMode(mode, depth); }
+    IOReturn setDisplayMode(IODisplayModeID mode, IOIndex depth) override { return (mode == 1 && depth == 0) ? kIOReturnSuccess : kIOReturnUnsupported; }
+    IOReturn getTimingInfoForDisplayMode(IODisplayModeID mode, IOTimingInformation *info) override {
+        if (mode != 1 || !info) return kIOReturnUnsupportedMode;
+        bzero(info, sizeof(*info));
+        info->appleTimingID = kIOTimingIDInvalid;
+        return kIOReturnSuccess;
+    }
+    IOItemCount getConnectionCount() override { return 1; }
+    bool hasDDCConnect(IOIndex) override { return true; }
+    IOReturn getDDCBlock(IOIndex idx, UInt32 block, IOSelect select, IOOptionBits options, UInt8 *data, IOByteCount *length) override {
+        if (idx != 0 || block != 0 || !data || !length) return kIOReturnBadArgument;
+        static const uint8_t kHdmiEdid[128] = {
+            0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x1e, 0x6d, 0x55, 0x25, 0x01, 0x01, 0x01, 0x01,
+            0x01, 0x20, 0x01, 0x03, 0x80, 0x35, 0x1e, 0x78, 0xea, 0xee, 0x95, 0xa3, 0x54, 0x4c, 0x99, 0x26,
+            0x0f, 0x50, 0x54, 0xa5, 0x4b, 0x00, 0x71, 0x4f, 0x81, 0x80, 0x81, 0xc0, 0x01, 0x01, 0x01, 0x01,
+            0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x02, 0x3a, 0x80, 0x18, 0x71, 0x38, 0x2d, 0x40, 0x58, 0x2c,
+            0x45, 0x00, 0x10, 0x09, 0x00, 0x00, 0x00, 0x1e, 0x00, 0x00, 0x00, 0xfd, 0x00, 0x30, 0x4b, 0x1e,
+            0x50, 0x0f, 0x00, 0x0a, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x00, 0x00, 0x00, 0xfc, 0x00, 0x47,
+            0x32, 0x35, 0x35, 0x46, 0x0a, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x00, 0x00, 0x00, 0xff,
+            0x00, 0x32, 0x30, 0x32, 0x36, 0x31, 0x31, 0x30, 0x39, 0x30, 0x30, 0x31, 0x0a, 0x20, 0x00, 0x68
+        };
+        const IOByteCount copyLen = *length < 128 ? *length : 128;
+        bcopy(kHdmiEdid, data, copyLen);
+        *length = copyLen;
+        return kIOReturnSuccess;
+    }
+    IOReturn getAppleSense(IOIndex idx, UInt32 *senseType, UInt32 *primary, UInt32 *extended, UInt32 *displayType) override {
+        if (senseType) *senseType = 0;
+        if (primary) *primary = 6;
+        if (extended) *extended = 0x22;
+        if (displayType) *displayType = 20;
+        return kIOReturnSuccess;
+    }
+    IOReturn getAttributeForConnection(IOIndex idx, IOSelect attr, uintptr_t *value) override {
+        if (!value) return kIOReturnBadArgument;
+        switch (attr) {
+        case kConnectionEnable: case kConnectionCheckEnable: *value = 1; return kIOReturnSuccess;
+        case kConnectionFlags: *value = 0; return kIOReturnSuccess;
+        case kConnectionSupportsHLDDCSense: case kConnectionSupportsLLDDCSense: *value = 1; return kIOReturnSuccess;
+        case kConnectionColorModesSupported: case kConnectionColorMode: *value = 0x00000001; return kIOReturnSuccess;
+        case kConnectionColorDepthsSupported: case kConnectionControllerColorDepth: case kConnectionControllerDepthsSupported:
+            *value = 0x00000002; return kIOReturnSuccess;
+        default: return IOFramebuffer::getAttributeForConnection(idx, attr, value);
+        }
+    }
+    IOReturn setAttributeForConnection(IOIndex idx, IOSelect attr, uintptr_t value) override {
+        switch (attr) {
+        case kConnectionPower: return kIOReturnSuccess;
+        case kConnectionColorModesSupported: case kConnectionColorDepthsSupported:
+        case kConnectionControllerColorDepth: case kConnectionControllerDepthsSupported: case kConnectionColorMode:
+        case kConnectionDisplayFlags: case kConnectionFlags: return kIOReturnSuccess;
+        default: return IOFramebuffer::setAttributeForConnection(idx, attr, value);
+        }
+    }
+    IOReturn connectFlags(IOIndex connectIndex, IODisplayModeID mode, IOOptionBits *flags) override {
+        if (!flags) return kIOReturnBadArgument;
+        *flags = kDisplayModeValidFlag | kDisplayModeSafeFlag | kDisplayModeDefaultFlag;
+        return kIOReturnSuccess;
+    }
+    IOReturn registerForInterruptType(IOSelect type, IOFBInterruptProc proc, OSObject *target, void *ref, void **iref) override {
+        if (type == kIOFBVBLInterruptType) {
+            for (Irq &q : fVbl) if (!q.proc) {
+                q.target = target; q.ref = ref; __atomic_store_n(&q.proc, proc, __ATOMIC_RELEASE);
+                if (iref) *iref = &q;
+                return kIOReturnSuccess;
+            }
+            return kIOReturnNoResources;
+        }
+        if (type == kIOFBConnectInterruptType) { fConnect = { proc, target, ref }; if (iref) *iref = &fConnect; return kIOReturnSuccess; }
+        return kIOReturnUnsupported;
+    }
+    IOReturn unregisterInterrupt(void *iref) override {
+        for (Irq &q : fVbl) if (iref == &q) __atomic_store_n(&q.proc, (IOFBInterruptProc)nullptr, __ATOMIC_RELEASE);
+        return kIOReturnSuccess;
+    }
+    IOReturn setInterruptState(void *, UInt32) override { return kIOReturnSuccess; }
+    IOReturn setGammaTable(UInt32, UInt32, UInt32, void *) override { return kIOReturnSuccess; }
+    IOReturn setGammaTable(UInt32, UInt32, UInt32, void *, bool) override { return kIOReturnSuccess; }
+    IOReturn setCLUTWithEntries(IOColorEntry *, UInt32, UInt32, IOOptionBits) override { return kIOReturnSuccess; }
+    IOReturn setApertureEnable(IOPixelAperture, IOOptionBits) override { return kIOReturnSuccess; }
+    IOReturn setStartupDisplayMode(IODisplayModeID, IOIndex) override { return kIOReturnSuccess; }
+    IOReturn setPowerState(unsigned long, IOService *) override { return kIOPMAckImplied; }
+    IOReturn setAttribute(IOSelect attr, uintptr_t val) override {
+        if (attr == kIOWindowServerActiveAttribute || attr == kIOPowerAttribute) return kIOReturnSuccess;
+        return IOFramebuffer::setAttribute(attr, val);
+    }
+    IOReturn getAttribute(IOSelect attr, uintptr_t *val) override {
+        if (attr == kIOWindowServerActiveAttribute) { if (val) *val = 1; return kIOReturnSuccess; }
+        return IOFramebuffer::getAttribute(attr, val);
+    }
+    IOReturn callPlatformFunction(const OSSymbol *fn, bool wait, void *p1, void *p2, void *p3, void *p4) override {
+        if (fn && fn->isEqualTo(NVRM_VRAM_FN_SCANOUT)) {
+            NVRMVramRequest *r = (NVRMVramRequest *)p1;
+            if (!r || r->version != NVRM_VRAM_ABI_VERSION) return kIOReturnBadArgument;
+            if (!fSurfMap) return kIOReturnNotReady;
+            r->kva = (void *)fSurfMap->getVirtualAddress();
+            r->phys = fBase + 0x01000000ull;
+            r->actualSize = round_page_64(1920ull * 4 * 1080);
+            r->width = 1920; r->height = 1080; r->pitch = 1920 * 4;
+            return kIOReturnSuccess;
+        }
+        if (fPrimary) return fPrimary->callPlatformFunction(fn, wait, p1, p2, p3, p4);
+        return IOFramebuffer::callPlatformFunction(fn, wait, p1, p2, p3, p4);
+    }
+};
+OSDefineMetaClassAndStructors(PhxHDMIHead, IOFramebuffer)
+
+static PhxAMDFB *gPhxPrimaryFB = nullptr;
+static PhxHDMIHead *gPhxHDMIHead = nullptr;
+static PhxHDMINub *gPhxHDMINub = nullptr;
+
+int phxSpawnHdmi(int enable) {
+    if (enable) {
+        if (gPhxHDMIHead) return 0;
+        if (!gPhxPrimaryFB || !gPhxPrimaryFB->fPCI) {
+            PFBLOG("phxSpawnHdmi: primary FB or PCI device not ready");
+            return -1;
+        }
+
+        gPhxHDMINub = new PhxHDMINub;
+        if (!gPhxHDMINub) return -1;
+        if (!gPhxHDMINub->init()) {
+            gPhxHDMINub->release();
+            gPhxHDMINub = nullptr;
+            return -1;
+        }
+        if (!gPhxHDMINub->attach(gPhxPrimaryFB->fPCI)) {
+            gPhxHDMINub->release();
+            gPhxHDMINub = nullptr;
+            return -1;
+        }
+        gPhxHDMINub->registerService();
+
+        gPhxHDMIHead = new PhxHDMIHead;
+        if (!gPhxHDMIHead) {
+            gPhxHDMINub->detach(gPhxPrimaryFB->fPCI);
+            gPhxHDMINub->release();
+            gPhxHDMINub = nullptr;
+            return -1;
+        }
+        if (!gPhxHDMIHead->init()) {
+            gPhxHDMIHead->release();
+            gPhxHDMIHead = nullptr;
+            gPhxHDMINub->detach(gPhxPrimaryFB->fPCI);
+            gPhxHDMINub->release();
+            gPhxHDMINub = nullptr;
+            return -1;
+        }
+
+        gPhxHDMIHead->fPrimary = gPhxPrimaryFB;
+        gPhxHDMIHead->fBase = gPhxPrimaryFB->fBase;
+        gPhxHDMIHead->fMmio = gPhxPrimaryFB->fMmio;
+        if (gPhxHDMIHead->fMmio) gPhxHDMIHead->fMmio->retain();
+
+        if (!gPhxHDMIHead->attach(gPhxHDMINub)) {
+            gPhxHDMIHead->release();
+            gPhxHDMIHead = nullptr;
+            gPhxHDMINub->detach(gPhxPrimaryFB->fPCI);
+            gPhxHDMINub->release();
+            gPhxHDMINub = nullptr;
+            return -1;
+        }
+
+        gPhxHDMI = gPhxHDMIHead;
+
+        if (!gPhxHDMIHead->start(gPhxHDMINub)) {
+            gPhxHDMI = nullptr;
+            gPhxHDMIHead->detach(gPhxHDMINub);
+            gPhxHDMIHead->release();
+            gPhxHDMIHead = nullptr;
+            gPhxHDMINub->detach(gPhxPrimaryFB->fPCI);
+            gPhxHDMINub->release();
+            gPhxHDMINub = nullptr;
+            PFBLOG("phxSpawnHdmi: PhxHDMIHead start failed");
+            return -1;
+        }
+
+        PFBLOG("phxSpawnHdmi: PhxHDMIHead published (1920x1080@60Hz)");
+        return 0;
+    } else {
+        if (!gPhxHDMIHead) return 0;
+        PFBLOG("phxSpawnHdmi: stopping PhxHDMIHead");
+        gPhxHDMI = nullptr;
+        gPhxHDMIHead->terminate(kIOServiceRequired | kIOServiceSynchronous);
+        gPhxHDMIHead->release();
+        gPhxHDMIHead = nullptr;
+        if (gPhxHDMINub) {
+            gPhxHDMINub->terminate(kIOServiceRequired | kIOServiceSynchronous);
+            gPhxHDMINub->release();
+            gPhxHDMINub = nullptr;
+        }
+        return 0;
+    }
+}
+
+static int phxfb_hdmi_sysctl SYSCTL_HANDLER_ARGS
+{
+    int v = (gPhxHDMI != nullptr) ? 1 : 0;
+    int err = sysctl_handle_int(oidp, &v, 0, req);
+    if (err || !req->newptr) return err;
+    if (v != 0 && v != 1) return EINVAL;
+    int r = phxSpawnHdmi(v);
+    return r ? EIO : 0;
+}
+
+// The panel's brightness as a display parameter. IOGraphics looks for parameter handlers under the framebuffer, and
+// takes a built-in TFT panel for a backlit one (AppleBacklightDisplay) only while a service named "backlight" exists.
+class PhxBacklight : public IODisplayParameterHandler {
+    OSDeclareDefaultStructors(PhxBacklight)
+    PhxAMDFB *fFB = nullptr;
+    uint32_t fLevel = kBlMax;
+public:
+    static PhxBacklight *withFramebuffer(PhxAMDFB *fb) {
+        PhxBacklight *b = new PhxBacklight;
+        if (b && !b->init()) OSSafeReleaseNULL(b);
+        if (b) { b->fFB = fb; fb->backlightRead(&b->fLevel); }
+        return b;
+    }
+    bool setDisplay(IODisplay *display) override {
+        if (!display) return true;
+        OSObject *p = display->copyProperty(gIODisplayParametersKey);
+        OSDictionary *cur = OSDynamicCast(OSDictionary, p);
+        OSDictionary *params = cur ? OSDictionary::withDictionary(cur) : OSDictionary::withCapacity(2);
+        OSSafeReleaseNULL(p);
+        if (!params) return false;
+        fFB->backlightRead(&fLevel);
+        IODisplay::addParameter(params, gIODisplayBrightnessKey, 0, kBlMax);
+        IODisplay::setParameter(params, gIODisplayBrightnessKey, (SInt32)fLevel);
+        // CoreBrightness sets the linear ones, as an Intel MacBook's framebuffer offers them: with "brightness" alone
+        // the slider moved and no parameter ever reached the panel (2026-10-25)
+        const OSSymbol *linear[] = { gIODisplayLinearBrightnessKey, gIODisplayUsableLinearBrightnessKey };
+        for (const OSSymbol *k : linear) { IODisplay::addParameter(params, k, 0, kBlMax); IODisplay::setParameter(params, k, (SInt32)fLevel); }
+        display->setProperty(gIODisplayParametersKey, params);
+        params->release();
+        PFBLOG("backlight: brightness parameter on %s, %u of %u", display->getName(), fLevel, kBlMax);
+        return true;
+    }
+    // the last parameter set, in the registry: PhxAMDFB's log does not reach the unified log
+    uint32_t fSets = 0;
+    bool doIntegerSet(OSDictionary *, const OSSymbol *paramName, UInt32 value) override {
+        setProperty("PhxLastParam", const_cast<OSSymbol *>(paramName)); setProperty("PhxLastValue", value, 32); setProperty("PhxSets", ++fSets, 32);
+        fFB->trace(paramName->getCStringNoCopy(), 0x20202020, value);
+        if (paramName != gIODisplayBrightnessKey && paramName != gIODisplayLinearBrightnessKey
+            && paramName != gIODisplayUsableLinearBrightnessKey) return false;
+        if (paramName == gIODisplayBrightnessKey && value == 0) {
+            fFB->displayPower(false);
+            fLevel = 0;
+            setProperty("PhxDark", fFB->backlightDark());
+            return true;
+        } else if (paramName == gIODisplayBrightnessKey && value > 0 && fFB->backlightDark()) {
+            fFB->displayPower(true);
+        }
+        if (!fFB->backlightSet(value)) return false;
+        fLevel = value > kBlMax ? kBlMax : value;
+        setProperty("PhxDark", fFB->backlightDark());
+        return true;
+    }
+    bool doDataSet(const OSSymbol *, OSData *) override { return false; }
+    IOReturn setProperties(OSObject *properties) override {
+        OSDictionary *d = OSDynamicCast(OSDictionary, properties);
+        if (OSCollectionIterator *it = d ? OSCollectionIterator::withCollection(d) : nullptr) {
+            while (const OSSymbol *k = OSDynamicCast(OSSymbol, it->getNextObject())) fFB->trace(k->getCStringNoCopy(), 0x2a2a2a2a, 0);
+            it->release();
+        }
+        return kIOReturnUnsupported;
+    }
+    bool doUpdate() override { return true; }
+};
+OSDefineMetaClassAndStructors(PhxBacklight, IODisplayParameterHandler)
+
+static IOService *phxBacklightCreate(PhxAMDFB *fb)
+{
+    PhxBacklight *b = PhxBacklight::withFramebuffer(fb);
+    if (!b) return nullptr;
+    b->setName("backlight");
+    if (!b->attach(fb)) { b->release(); return nullptr; }
+    b->registerService();
+    return b;
+}
+
+// One boot per arming: `nvram phxfb-boot=1` lets the next start take the panel, and start removes the variable and
+// commits NVRAM at once, so a boot that panics after this point comes back on the firmware framebuffer without hands.
+static bool takeBootArming()
+{
+    IORegistryEntry *opts = IORegistryEntry::fromPath("/options", gIODTPlane);
+    if (!opts) return false;
+    OSObject *o = opts->copyProperty("phxfb-boot");
+    const bool armed = o != nullptr;
+    bool stuck = false;
+    OSSafeReleaseNULL(o);
+    if (armed) {
+        opts->removeProperty("phxfb-boot");
+        // the forced commit: the throttled one (IONVRAM-SYNCNOW) left the variable in flash once, and the boot after a
+        // panic took the panel again (2026-10-20)
+        if (OSString *why = OSString::withCString("phxfb")) { opts->setProperty("IONVRAM-FORCESYNCNOW-PROPERTY", why); why->release(); }
+        o = opts->copyProperty("phxfb-boot");
+        stuck = o != nullptr;
+        PFBLOG("NVRAM phxfb-boot taken (%s)", stuck ? "STILL SET: removal refused, not taking the panel" : "removed and committed");
+        OSSafeReleaseNULL(o);
+    }
+    opts->release();
+    return armed && !stuck;
+}
+
+bool PhxAMDFB::start(IOService *provider)
+{
+    fPCI = OSDynamicCast(IOPCIDevice, provider);
+    if (!fPCI) return false;
+    gPhxPrimaryFB = this;
+
+    char arg[8];
+    if (PE_parse_boot_argn("-phxfboff", arg, sizeof arg)) { PFBLOG("-phxfboff: leaving the firmware framebuffer"); return false; }
+        if (!takeBootArming()) { PFBLOG("NVRAM phxfb-boot not set: leaving the firmware framebuffer this boot"); return false; }
+        if (OSIterator *it = fPCI->getChildIterator(gIOServicePlane)) {
+            while (OSObject *o = it->getNextObject())
+                if (o != this && OSDynamicCast(IOFramebuffer, o)) fBeside = true;
+            it->release();
+        }
+        PE_Video v;
+        bzero(&v, sizeof(v));
+        IOPlatformExpert *pe = getPlatform();
+        if (!pe || pe->getConsoleInfo(&v) != kIOReturnSuccess || !v.v_baseAddr || v.v_depth != 32 || !v.v_width || !v.v_height ||
+            v.v_rowBytes < v.v_width * 4 || v.v_width > 16384 || v.v_height > 16384) {
+            PFBLOG("no usable boot console (base 0x%lx %lux%lu depth %lu row %lu): leaving the firmware framebuffer",
+                   v.v_baseAddr, v.v_width, v.v_height, v.v_depth, v.v_rowBytes);
+            return false;
+        }
+        fWidth = (uint32_t)v.v_width; fHeight = (uint32_t)v.v_height; fRowBytes = (uint32_t)v.v_rowBytes;
+        uint64_t base = v.v_baseAddr;
+        if (base >= 0xFFFF800000000000ull) {
+            const volatile uint32_t *con = (const volatile uint32_t *)(uintptr_t)base;
+            const uint32_t probeWords = 64u * 1024u / 4u;
+            uint64_t found = 0;
+            for (uint32_t i = 0; i < fPCI->getDeviceMemoryCount() && !found; i++) {
+                IODeviceMemory *dm = fPCI->getDeviceMemoryWithIndex(i);
+                if (!dm || dm->getLength() < (IOByteCount)fRowBytes * fHeight) continue;
+                IODeviceMemory *sub = IODeviceMemory::withSubRange(dm, 0, 64u * 1024u);
+                IOMemoryMap *m = sub ? sub->map(kIOMapInhibitCache) : nullptr;
+                OSSafeReleaseNULL(sub);
+                if (!m) continue;
+                const volatile uint32_t *bar = (const volatile uint32_t *)m->getVirtualAddress();
+                uint32_t same = 0, nz = 0;
+                for (uint32_t w = 0; w < probeWords; w++) { const uint32_t a = con[w], b = bar[w]; same += a == b; nz += a != 0; }
+                PFBLOG("BAR index %u at 0x%llx: %u of %u words match the console (%u non-zero)", i,
+                       (unsigned long long)dm->getPhysicalAddress(), same, probeWords, nz);
+                if (same == probeWords && nz) found = dm->getPhysicalAddress();
+                m->release();
+            }
+            if (!found) { PFBLOG("the console surface is in none of the GPU's BARs: leaving the firmware framebuffer"); return false; }
+            base = found;
+        }
+        base &= ~(uint64_t)PAGE_MASK;
+        fBase = (IOPhysicalAddress)base;
+        PFBLOG("console: %ux%u row %u depth %lu at physical 0x%llx", fWidth, fHeight, fRowBytes, v.v_depth, (unsigned long long)fBase);
+        if (IODeviceMemory *sm = IODeviceMemory::withRange(fBase, (IOPhysicalLength)32ull * 1024ull * 1024ull)) {
+            fSurfMap = sm->map(kIOMapWriteCombineCache); sm->release();
+        }
+        if (!fSurfMap) { PFBLOG("the console surface at 0x%llx would not map write-combined", (unsigned long long)fBase); return false; }
+
+        setProperty("IOFBDependentID", 0x50485846ull << 32 | 1, 64);   // 'PHXF'
+        setProperty("IOFBDependentIndex", 0ull, 32);
+
+        fMmio = fPCI->mapDeviceMemoryWithRegister(kIOPCIConfigBaseAddress5);
+        if (fMmio && fMmio->getLength() < (kBlLock + kBlSeqs[1] + 1) * 4) OSSafeReleaseNULL(fMmio);
+        uint32_t bl = 0;
+        if (PE_parse_boot_argn("-phxbloff", arg, sizeof arg)) PFBLOG("backlight: -phxbloff, no brightness control");
+        else if (!backlightRead(&bl)) PFBLOG("backlight: the PWM is not running (no MMIO view, or off), no brightness control");
+        else if (!(fBacklight = phxBacklightCreate(this))) PFBLOG("backlight: the handler would not attach");
+        else PFBLOG("backlight: PWM at %u of %u", bl, kBlMax);
+
+        if (!IOFramebuffer::start(provider)) {
+            if (fBacklight) { fBacklight->detach(this); OSSafeReleaseNULL(fBacklight); }
+            OSSafeReleaseNULL(fMmio); OSSafeReleaseNULL(fSurfMap); return false;
+        }
+
+        fVa = IORangeAllocator::withRange(kVaSize - 1, PAGE_SIZE, 0, IORangeAllocator::kLocking);
+        poolInit();
+        setProperty("built-in", kOSBooleanTrue);
+        setProperty("IOFBGammaWidth", 8ull, 32);
+        setProperty("IOFBGammaCount", 256ull, 32);
+        setProperty("DisplayGammaChannels", 3ull, 32);
+        setProperty("DisplayGammaEntryCount", 256ull, 32);
+        setProperty("DisplayGammaEntrySize", 1ull, 32);
+        setProperty("PhxFBWidth", fWidth, 32); setProperty("PhxFBHeight", fHeight, 32);   // the AGDC's panel timing reads these
+        {   // [port] HiDPI: let the OS install scaled detailed timings (validateDetailedTiming keeps only native-size ones)
+            IODisplayScalerInformation si;
+            bzero(&si, sizeof(si));
+            si.scalerFeatures = kIOScaleCanUpSamplePixels | kIOScaleCanDownSamplePixels;
+            si.maxHorizontalPixels = fWidth; si.maxVerticalPixels = fHeight;
+            if (OSData *d = OSData::withBytes(&si, sizeof(si))) { setProperty(kIOFBScalerInfoKey, d); d->release(); }
+            // [port] round 2: a timing range too ("allows the OS to program detailed timings that fall within it"),
+            // wide on purpose; validateDetailedTiming is what limits the modes to the panel's native size
+            IODisplayTimingRangeV1 tr;
+            bzero(&tr, sizeof(tr));
+            tr.minPixelClock = 10000000ull; tr.maxPixelClock = 1000000000ull; tr.maxPixelError = 1000000;
+            tr.supportedSyncFlags = kIORangeSupportsSeparateSyncs;
+            tr.minFrameRate = 24; tr.maxFrameRate = 240; tr.minLineRate = 1000; tr.maxLineRate = 1000000;
+            tr.maxHorizontalTotal = 8192; tr.maxVerticalTotal = 8192;
+            tr.charSizeHorizontalActive = tr.charSizeHorizontalBlanking = tr.charSizeHorizontalSyncOffset = 1;
+            tr.charSizeHorizontalSyncPulse = tr.charSizeVerticalActive = tr.charSizeVerticalBlanking = 1;
+            tr.charSizeVerticalSyncOffset = tr.charSizeVerticalSyncPulse = tr.charSizeHorizontalBorderLeft = 1;
+            tr.charSizeHorizontalBorderRight = tr.charSizeVerticalBorderTop = tr.charSizeVerticalBorderBottom = 1;
+            tr.charSizeHorizontalTotal = tr.charSizeVerticalTotal = 1;
+            tr.minHorizontalActiveClocks = 640; tr.maxHorizontalActiveClocks = fWidth;
+            tr.minHorizontalBlankingClocks = 0; tr.maxHorizontalBlankingClocks = 4096;
+            tr.minHorizontalSyncOffsetClocks = 0; tr.maxHorizontalSyncOffsetClocks = 4096;
+            tr.minHorizontalPulseWidthClocks = 0; tr.maxHorizontalPulseWidthClocks = 4096;
+            tr.minVerticalActiveClocks = 480; tr.maxVerticalActiveClocks = fHeight;
+            tr.minVerticalBlankingClocks = 0; tr.maxVerticalBlankingClocks = 4096;
+            tr.minVerticalSyncOffsetClocks = 0; tr.maxVerticalSyncOffsetClocks = 4096;
+            tr.minVerticalPulseWidthClocks = 0; tr.maxVerticalPulseWidthClocks = 4096;
+            if (OSData *d = OSData::withBytes(&tr, sizeof(tr))) { setProperty(kIOFBTimingRangeKey, d); d->release(); }
+            setProperty("PhxHiDPIValidateCalls", 0ull, 32);
+            setProperty("PhxHiDPIDetailedCalls", 0ull, 32);
+        }
+        measureRefresh();
+        setProperty("PhxFBRefreshMilliHz", fRefreshMilliHz, 32);
+        if (fHTotal) { setProperty("PhxFBHTotal", fHTotal, 32); setProperty("PhxFBVTotal", fVTotal, 32); }   // the AGDC's panel timing
+        nanoseconds_to_absolutetime(fFrameNs, &gPhxFrameAbs);
+        fVblTimer = thread_call_allocate(vblFire, this);
+        if (fVblTimer) { uint64_t d; clock_interval_to_deadline((uint32_t)(fFrameNs / 1000), kMicrosecondScale, &d); fVblNext = d; thread_call_enter_delayed(fVblTimer, d); }
+        static IOPMPowerState states[2] = {
+            { 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+            { 1, kIOPMDeviceUsable, kIOPMPowerOn, kIOPMPowerOn, 0, 0, 0, 0, 0, 0, 0, 0 },
+        };
+        PMinit();
+        registerPowerDriver(this, states, 2);
+        phxHoldInit(this, kBootHoldSec);
+        phxAgdcInstall();
+        if (!gAliasSysctl) { for (auto *o : kFbOids) sysctl_register_oid(o); gAliasSysctl = true; }
+        PFBLOG("panel published: %ux%u row %u at 0x%llx (vbl timer %s)", fWidth, fHeight, fRowBytes,
+               (unsigned long long)fBase, fVblTimer ? "running" : "MISSING");
+
+        return true;
+}
+
+void PhxAMDFB::stop(IOService *provider)
+{
+    fStopping = true;
+    OSSafeReleaseNULL(fDetailed);   // [port] HiDPI detailed timings
+    OSSafeReleaseNULL(fValidateSeen);
+    if (gPhxPrimaryFB == this) gPhxPrimaryFB = nullptr;
+    if (gPhxHDMI) {
+        gPhxHDMI->terminate();
+        gPhxHDMI = nullptr;
+    }
+    phxAgdcRemove();
+    if (gAliasSysctl) { for (auto *o : kFbOids) sysctl_unregister_oid(o); gAliasSysctl = false; }
+    if (fBacklight) { fBacklight->terminate(); OSSafeReleaseNULL(fBacklight); }
+    if (fWakeGate) { if (IOWorkLoop *wl = getWorkLoop()) wl->removeEventSource(fWakeGate); OSSafeReleaseNULL(fWakeGate); }
+    OSSafeReleaseNULL(fAliasMap);
+    OSSafeReleaseNULL(fVa);
+    poolFree();
+    if (fVblTimer) { thread_call_cancel(fVblTimer); while (!thread_call_free(fVblTimer)) { thread_call_cancel(fVblTimer); IOSleep(5); } fVblTimer = nullptr; }
+    gPhxFrameAbs = 0;
+    OSSafeReleaseNULL(fMmio);
+    OSSafeReleaseNULL(fSurfMap);
+    PMstop();
+    IOFramebuffer::stop(provider);
+}

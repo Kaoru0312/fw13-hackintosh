@@ -1,0 +1,56 @@
+# --- 隱私：含 SMBIOS 序號的 OpenCore 設定，任何複本都不能進 repo ---
+config*.plist
+config*.plist.*
+oc/config-current.plist
+
+# --- 第三方原始碼/SDK（可重新下載）---
+MacKernelSDK/
+nullarc-src/
+nullarc-release/
+acpi/acpica-unix-*/
+acpi/iasl
+acpi/tables-linux/
+
+# --- 二進位、下載檔、編譯產物 ---
+*.zip
+*.dylib
+*.kext/
+*.bundle/
+*.app/
+*.efi
+*.o
+*.aml
+build/
+backup/
+amdpm/dl/
+oc/dbg/
+nullarc-pkg/PhxGPU/
+audio/*.kext
+
+# --- 大型取樣與記錄檔 ---
+/*.txt
+*.spindump
+.DS_Store
+*.tar.gz
+*.log
+*.dSYM/
+battery/dl/
+acpi/tables/
+audio/hda-log.txt
+oc/oc-debug-boot.txt
+nullarc-pkg/gpu/fw/
+# 編譯好的執行檔（可由原始碼重建）
+nullarc-pkg/gpu/phxctl/
+nullarc-port/mesboot
+nullarc-port/mesboot.orig
+nullarc-port/phxctl
+nullarc-test/mtlprobe
+vtprobe/vtprobe
+
+# 第三方原始碼（PR 分支，可重新 clone）
+bt/src/
+i2c/src/
+vcn/fw/
+vcn/ref/
+vcn/vcnctl
+vcn/phase3/vtprobe

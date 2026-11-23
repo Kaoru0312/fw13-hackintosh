@@ -1,0 +1,133 @@
+== 2026-11-22 12:56:50  uptime  6:33
+== check（只讀）
+  phx-fb-mc-base 0x8000000000  phx-debug Yes
+  SMU GetEnabledSmuFeatures(lo) -> kr 0x00000000 resp 0x01 out 0xfbfff7ff
+  fw_shared 大小 148 bytes（sq @16, smu_dpm @120, drm_key @124）
+  配置：VCPU BO +0xc000000（MC 0x800c000000）fw_shared +0xc0a0000  ring +0xc100000（16384 bytes）
+  VRAM +0xc000000..+0xc200000：非 0 524288、0xFFFFFFFF 0（共 524288 dword）；前 8 個： 4382d222 6fe2f226 58926082 54d24082 5b9ad7a0 57dad7a4 60aa4500 6ce84504
+  3 秒內沒有任何變化 → 是殘留資料，沒人在用（up 會先清 0）
+== watchdog：4 分鐘後自動重開，跑完會取消
+== check（只讀）
+  phx-fb-mc-base 0x8000000000  phx-debug Yes
+  SMU GetEnabledSmuFeatures(lo) -> kr 0x00000000 resp 0x01 out 0xfbfff7ff
+  fw_shared 大小 148 bytes（sq @16, smu_dpm @120, drm_key @124）
+  配置：VCPU BO +0xc000000（MC 0x800c000000）fw_shared +0xc0a0000  ring +0xc100000（16384 bytes）
+  VRAM +0xc000000..+0xc200000：非 0 524288、0xFFFFFFFF 0（共 524288 dword）；前 8 個： 4382d222 6fe2f226 58926082 54d24082 5b9ad7a0 57dad7a4 60aa4500 6ce84504
+  3 秒內沒有任何變化 → 是殘留資料，沒人在用（up 會先清 0）
+== 1. PSP 載 VCN 韌體  /Users/kaoru/fw13-hackintosh/vcn/fw/vcn_4_0_2.bin：size 403856 ip 4 ucode_version 0x09118037 ucode_size 403600 offset 0x100
+  psp LOAD_IP_FW VCN        type 13 size 403600 @fwbuf+0x0 -> kr 0x00000000 status 0x00000000 70000 us fw_addr 0x0000008008a10000
+== 2. SMU PowerUpVcn（VCN 預設斷電）
+  smu PowerUpVcn     msg 0x07 arg 0x00000000 -> resp 0x01 (OK)  out 0x00000000  1 ms
+  UVD_POWER_STATUS         [0x07e02] = 0x00000001
+  UVD_STATUS               [0x07f43] = 0xdeadbeef
+  UVD_DPG_PAUSE            [0x07e14] = 0x00000000
+  VCN_RB_ENABLE            [0x07e85] = 0x000001ff
+  UVD_RB_BASE_LO           [0x07eea] = 0xdeadbeef
+  UVD_RB_BASE_HI           [0x07eeb] = 0xdeadbeef
+  UVD_RB_SIZE              [0x07eec] = 0xdeadbeef
+  UVD_RB_RPTR              [0x07eac] = 0x00000000
+  UVD_RB_WPTR              [0x07ead] = 0x00000000
+  VCN_RB1_DB_CTRL          [0x07e72] = 0x40000008
+  UVD_VCPU_CNTL            [0x07f96] = 0xffffffff
+  UVD_MASTINT_EN           [0x07ee1] = 0xdeadbeef
+  UVD_LMI_CTRL             [0x080b0] = 0xdeadbeef
+  UVD_GFX10_ADDR_CONFIG    [0x07e42] = 0x00004345
+== 3. fw_shared @+0xc0a0000、清空 ring @+0xc100000
+  present_flag_0 0x00000814（含 DRM key inject / ASD handshaking）
+  清 0 VCPU BO（stack + context，640 KiB，跟 Linux amdgpu_vcn_resume 一樣）
+== 4. UVD_POWER_STATUS：anti-hang + 動態電源閘控
+  wreg UVD_POWER_STATUS           [0x07e02] = 0x00000001  readback 0x00000001
+  wreg UVD_POWER_STATUS           [0x07e02] = 0x00000105  readback 0x00000105
+== 5. DPG SRAM 清單（vcn_v4_0_start_dpg_mode，indirect）→ PSP VCN0_RAM
+  sram UVD_VCPU_CNTL (CLK_EN|BLK_RST)     off 0x000d6 = 0x1ff00200
+  sram UVD_MASTINT_EN (0)                 off 0x00021 = 0x00000000
+  sram UVD_LMI_CTRL                       off 0x001f0 = 0x00307308
+  sram UVD_MPC_CNTL                       off 0x00114 = 0x00000010
+  sram UVD_MPC_SET_MUXA0                  off 0x00116 = 0x040c2040
+  sram UVD_MPC_SET_MUXB0                  off 0x00118 = 0x040c2040
+  sram UVD_MPC_SET_MUX                    off 0x0011a = 0x00000088
+  sram LMI_VCPU_CACHE_BAR_LOW (PSP)       off 0x00184 = 0x00000000
+  sram LMI_VCPU_CACHE_BAR_HIGH (PSP)      off 0x00185 = 0x00000000
+  sram VCPU_CACHE_OFFSET0                 off 0x000c0 = 0x00000000
+  sram VCPU_CACHE_SIZE0 (PSP)             off 0x000c1 = 0x00000000
+  sram LMI_VCPU_CACHE1_BAR_LOW (PSP)      off 0x001b0 = 0x00000000
+  sram LMI_VCPU_CACHE1_BAR_HIGH (PSP)     off 0x001b1 = 0x00000000
+  sram VCPU_CACHE_OFFSET1                 off 0x000c2 = 0x00000000
+  sram VCPU_CACHE_SIZE1 (stack)           off 0x000c3 = 0x00020000
+  sram LMI_VCPU_CACHE2_BAR_LOW (context)  off 0x001b4 = 0x0c020000
+  sram LMI_VCPU_CACHE2_BAR_HIGH (context) off 0x001b5 = 0x00000080
+  sram VCPU_CACHE_OFFSET2                 off 0x000c4 = 0x00000000
+  sram VCPU_CACHE_SIZE2 (context)         off 0x000c5 = 0x00080000
+  sram LMI_VCPU_NC0_BAR_LOW (fw_shared)   off 0x00180 = 0x0c0a0000
+  sram LMI_VCPU_NC0_BAR_HIGH (fw_shared)  off 0x00181 = 0x00000080
+  sram VCPU_NONCACHE_OFFSET0              off 0x000d2 = 0x00000000
+  sram VCPU_NONCACHE_SIZE0                off 0x000d3 = 0x00001000
+  sram UVD_GFX10_ADDR_CONFIG              off 0x0c042 = 0x00000242
+  sram UVD_VCPU_CNTL (CLK_EN)             off 0x000d6 = 0x0ff00200
+  sram UVD_LMI_CTRL2                      off 0x001ee = 0x003e0000
+  sram UVD_MASTINT_EN (VCPU_EN)           off 0x00021 = 0x00000002
+  psp LOAD_IP_FW VCN0_RAM   type 49 size 216 @fwbuf+0x100000 -> kr 0x00000000 status 0x00000000 1000 us fw_addr 0x0000000000000000
+  UVD_POWER_STATUS         [0x07e02] = 0x00000105
+  UVD_STATUS               [0x07f43] = 0xdeadbeef
+  UVD_DPG_PAUSE            [0x07e14] = 0x00000000
+  VCN_RB_ENABLE            [0x07e85] = 0x000001ff
+  UVD_RB_BASE_LO           [0x07eea] = 0x00000000
+  UVD_RB_BASE_HI           [0x07eeb] = 0x00000000
+  UVD_RB_SIZE              [0x07eec] = 0x00000000
+  UVD_RB_RPTR              [0x07eac] = 0x00000000
+  UVD_RB_WPTR              [0x07ead] = 0x00000000
+  VCN_RB1_DB_CTRL          [0x07e72] = 0x40000008
+  UVD_VCPU_CNTL            [0x07f96] = 0xffffffff
+  UVD_MASTINT_EN           [0x07ee1] = 0xdeadbeef
+  UVD_LMI_CTRL             [0x080b0] = 0xdeadbeef
+  UVD_GFX10_ADDR_CONFIG    [0x07e42] = 0x00004345
+== 6. unified ring @+0xc100000（MC 0x800c100000），直接寫 WPTR（不用 doorbell）
+  wreg UVD_RB_BASE_LO             [0x07eea] = 0x0c100000  readback 0x0c100000
+  wreg UVD_RB_BASE_HI             [0x07eeb] = 0x00000080  readback 0x00000080
+  wreg UVD_RB_SIZE                [0x07eec] = 0x00001000  readback 0x00001000
+  wreg VCN_RB_ENABLE (RB1 off)    [0x07e85] = 0x000001fb  readback 0x000001fb
+  wreg UVD_RB_RPTR                [0x07eac] = 0x00000000  readback 0x00000000
+  wreg UVD_RB_WPTR                [0x07ead] = 0x00000000  readback 0x00000000
+  wreg UVD_RB_WPTR (= RPTR)       [0x07ead] = 0x00000000  readback 0x00000000
+  wreg VCN_RB_ENABLE (RB1 on)     [0x07e85] = 0x000001ff  readback 0x000001ff
+  UVD_STATUS 讀回 0xdeadbeef
+  UVD_POWER_STATUS         [0x07e02] = 0x00000105
+  UVD_STATUS               [0x07f43] = 0xdeadbeef
+  UVD_DPG_PAUSE            [0x07e14] = 0x00000000
+  VCN_RB_ENABLE            [0x07e85] = 0x000001ff
+  UVD_RB_BASE_LO           [0x07eea] = 0x0c100000
+  UVD_RB_BASE_HI           [0x07eeb] = 0x00000080
+  UVD_RB_SIZE              [0x07eec] = 0x00001000
+  UVD_RB_RPTR              [0x07eac] = 0x00000000
+  UVD_RB_WPTR              [0x07ead] = 0x00000000
+  VCN_RB1_DB_CTRL          [0x07e72] = 0x40000008
+  UVD_VCPU_CNTL            [0x07f96] = 0xffffffff
+  UVD_MASTINT_EN           [0x07ee1] = 0xdeadbeef
+  UVD_LMI_CTRL             [0x080b0] = 0xdeadbeef
+  UVD_GFX10_ADDR_CONFIG    [0x07e42] = 0x00004345
+== up 完成。下一步：vcnctl ringtest
+== ringtest（VCN_ENC_CMD_END + 63 NOP，同 amdgpu_vcn_enc_ring_test_ring）
+  開始 RPTR 0x0 WPTR 0x0
+  wreg UVD_RB_WPTR                [0x07ead] = 0x00000040  readback 0x00000040
+  RPTR 0x0 -> 0x40（2 ms）  ✅ VCN 有在讀 ring
+  UVD_POWER_STATUS         [0x07e02] = 0x00000105
+  UVD_STATUS               [0x07f43] = 0xdeadbeef
+  UVD_DPG_PAUSE            [0x07e14] = 0x00000000
+  VCN_RB_ENABLE            [0x07e85] = 0x000001ff
+  UVD_RB_BASE_LO           [0x07eea] = 0x0c100000
+  UVD_RB_BASE_HI           [0x07eeb] = 0x00000080
+  UVD_RB_SIZE              [0x07eec] = 0x00001000
+  UVD_RB_RPTR              [0x07eac] = 0x00000040
+  UVD_RB_WPTR              [0x07ead] = 0x00000040
+  VCN_RB1_DB_CTRL          [0x07e72] = 0x40000008
+  UVD_VCPU_CNTL            [0x07f96] = 0xffffffff
+  UVD_MASTINT_EN           [0x07ee1] = 0xdeadbeef
+  UVD_LMI_CTRL             [0x080b0] = 0xdeadbeef
+  UVD_GFX10_ADDR_CONFIG    [0x07e42] = 0x00000242
+== down（vcn_v4_0_stop_dpg_mode 簡化版 + PowerDownVcn）
+  UVD_POWER_STATUS 0x00000105（等 =1：OK）
+  wreg VCN_RB_ENABLE (RB1 off)    [0x07e85] = 0x000001fb  readback 0x000001fb
+  wreg UVD_POWER_STATUS (PG_MODE off) [0x07e02] = 0x00000101  readback 0x00000101
+  smu PowerDownVcn   msg 0x06 arg 0x00000000 -> resp 0x01 (OK)  out 0x00000000  1 ms
+watchdog 已取消
+/Users/kaoru/fw13-hackintosh/vcn/vcn-test.sh: line 26: RT�: unbound variable

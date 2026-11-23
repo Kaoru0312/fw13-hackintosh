@@ -1,0 +1,79 @@
+== 2026-11-22 05:48:32  uptime 34 mins
+== 背景程式
+ 19.6 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+ 17.7 /Applications/Claude.app/Contents/Frameworks/Claude Helper (Renderer).app/Contents/MacOS/Claude Helper (Renderer)
+  4.5 /Applications/Claude.app/Contents/MacOS/Claude
+  4.3 /Applications/Claude.app/Contents/Frameworks/Claude Helper.app/Contents/MacOS/Claude Helper
+  1.1 /System/Volumes/Preboot/Cryptexes/App/System/Applications/Safari.app/Contents/MacOS/Safari
+  0.4 /usr/sbin/notifyd
+  0.4 /usr/libexec/opendirectoryd
+  0.4 /usr/libexec/airportd
+!! AMD Power Gadget 開著（數字會偏高）
+== 封裝功耗 12385 mW  C0 75‰
+
+== 1. powermetrics interrupts（5 秒）
+****  Interrupt distribution ****
+
+CPU 0:
+	Vector 0x46(I2CD/SMC): 7740.97 interrupts/sec
+	Vector 0x73(XHC4/MHSP): 0.40 interrupts/sec
+	Vector 0x74(XHC3/MHSP): 0.40 interrupts/sec
+	Vector 0x75(XHC1/MHSP): 0.40 interrupts/sec
+	Vector 0x76(XHC0): 0.40 interrupts/sec
+	Vector 0x78(WLAN): 34.79 interrupts/sec
+	Vector 0xdd(TMR): 1005.81 interrupts/sec
+	Vector 0xde(IPI): 1219.58 interrupts/sec
+CPU 1:
+	Vector 0xdd(TMR): 4.80 interrupts/sec
+	Vector 0xde(IPI): 95.38 interrupts/sec
+CPU 2:
+	Vector 0xdd(TMR): 618.09 interrupts/sec
+	Vector 0xde(IPI): 1612.90 interrupts/sec
+CPU 3:
+	Vector 0xdd(TMR): 6.40 interrupts/sec
+	Vector 0xde(IPI): 99.18 interrupts/sec
+CPU 4:
+	Vector 0xdd(TMR): 522.90 interrupts/sec
+	Vector 0xde(IPI): 1247.17 interrupts/sec
+CPU 5:
+	Vector 0xdd(TMR): 8.20 interrupts/sec
+	Vector 0xde(IPI): 107.78 interrupts/sec
+CPU 6:
+	Vector 0xdd(TMR): 375.53 interrupts/sec
+	Vector 0xde(IPI): 894.64 interrupts/sec
+CPU 7:
+	Vector 0xdd(TMR): 4.40 interrupts/sec
+	Vector 0xde(IPI): 77.59 interrupts/sec
+CPU 8:
+	Vector 0xdd(TMR): 241.16 interrupts/sec
+	Vector 0xde(IPI): 585.49 interrupts/sec
+CPU 9:
+	Vector 0xdd(TMR): 5.00 interrupts/sec
+	Vector 0xde(IPI): 78.99 interrupts/sec
+CPU 10:
+	Vector 0xdd(TMR): 91.18 interrupts/sec
+	Vector 0xde(IPI): 358.53 interrupts/sec
+CPU 11:
+	Vector 0xdd(TMR): 3.40 interrupts/sec
+	Vector 0xde(IPI): 93.98 interrupts/sec
+
+
+
+== 2–4. dtrace（20 秒）
+dtrace: invalid probe specifier 
+profile-997 /pid == 0 && arg0/ { @prof[stack(8)] = count(); }
+fbt:mach_kernel:thread_call_invoke:entry { @tc[sym(arg0)] = count(); }
+fbt::*IOTimerEventSource*timeout*:entry { @tes[probefunc, stack(4)] = count(); }
+fbt::*IOInterruptEventSource*normalInterruptOccurred*:entry,
+fbt::*IOFilterInterruptEventSource*normalInterruptOccurred*:entry,
+fbt::*IOFilterInterruptEventSource*disableInterruptOccurred*:entry { @irq[probefunc, stack(3)] = count(); }
+tick-20s {
+  printf("\n---- kernel_task CPU stack（前 12，997 Hz 取樣；20 秒共約 %d 個取樣/CPU）\n", 997*20);
+  trunc(@prof, 12); printa(@prof);
+  printf("\n---- thread_call 回呼次數（20 秒，前 25）\n"); trunc(@tc, 25); printa("%@10d  %a\n", @tc);
+  printf("\n---- IOTimerEventSource（20 秒，前 15）\n"); trunc(@tes, 15); printa(@tes);
+  printf("\n---- 中斷事件來源（20 秒，前 15）\n"); trunc(@irq, 15); printa(@irq);
+  exit(0);
+}: probe description fbt:mach_kernel:thread_call_invoke:entry does not match any probes
+
+結果存在 /Users/kaoru/fw13-hackintosh/power/wakeups-1122-054832.txt

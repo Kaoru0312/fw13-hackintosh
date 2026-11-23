@@ -1,0 +1,46 @@
+diff --git a/VoodooI2CHID/VoodooI2CHIDDevice.cpp b/VoodooI2CHID/VoodooI2CHIDDevice.cpp
+index 9a4edbb..a4cf122 100644
+--- a/VoodooI2CHID/VoodooI2CHIDDevice.cpp
++++ b/VoodooI2CHID/VoodooI2CHIDDevice.cpp
+@@ -284,6 +284,9 @@ IOReturn VoodooI2CHIDDevice::resetHIDDevice() {
+     return command_gate->runAction(OSMemberFunctionCast(IOCommandGate::Action, this, &VoodooI2CHIDDevice::resetHIDDeviceGated));
+ }
+ 
++static UInt32 fw13_reset_timeouts = 0;
++static UInt32 fw13_post_reset_power_on = 0;
++
+ IOReturn VoodooI2CHIDDevice::resetHIDDeviceGated() {
+     setHIDPowerState(kVoodooI2CStateOn);
+ 
+@@ -306,13 +309,29 @@ IOReturn VoodooI2CHIDDevice::resetHIDDeviceGated() {
+         IOReturn sleep = command_gate->commandSleep(&reset_event, deadline, THREAD_UNINT);
+ 
+         if (sleep == THREAD_TIMED_OUT) {
+-            IOLog("%s::%s Timeout waiting for device to complete host initiated reset\n", getName(), name);
+-            return kIOReturnTimeout;
++            /*
++             * [fw13] Linux i2c-hid treats a reset-complete timeout as non-fatal:
++             * it warns and continues with SET_POWER(ON). Returning here left the
++             * device initialised but silent.
++             */
++            IOLog("%s::%s Timeout waiting for device to complete host initiated reset; continuing\n", getName(), name);
++            fw13_reset_timeouts++;
++            setProperty("FW13ResetTimeouts", fw13_reset_timeouts, 32);
+         } else if (sleep == THREAD_AWAKENED) {
+             IOLog("%s::%s Device initiated reset accomplished\n", getName(), name);
+         }
+     }
+ 
++    /*
++     * [fw13] Linux i2c-hid re-sends SET_POWER(ON) after RESET completes
++     * (i2c_hid_hwreset). Some touchpads do not resume reporting without it.
++     * Idea from kevin8717/VoodooI2C-htix5288.
++     */
++    IOReturn power_ret = setHIDPowerState(kVoodooI2CStateOn);
++    fw13_post_reset_power_on++;
++    setProperty("FW13PostResetPowerOn", fw13_post_reset_power_on, 32);
++    setProperty("FW13PostResetPowerOnRet", (UInt32)power_ret, 32);
++
+     return kIOReturnSuccess;
+ }
+ 

@@ -1,0 +1,184 @@
+radv-darwin: native kext: ABI 1.12, build 34, VMID 8, max 64 IBs/submit, GB_ADDR_CONFIG 0x00000242, VRAM 256 MiB visible + 1536 MiB hi, GTT cap 512 MiB
+{
+    CodecName = "Apple ProRes Decoder";
+    CodecType = 1634743416;
+    DecoderID = "com.apple.videotoolbox.videodecoder.prores";
+}
+{
+    CodecName = "Apple ProRes Decoder";
+    CodecType = 1634743400;
+    DecoderID = "com.apple.videotoolbox.videodecoder.prores";
+}
+{
+    CodecName = "Apple ProRes Decoder";
+    CodecType = 1634755432;
+    DecoderID = "com.apple.videotoolbox.videodecoder.prores";
+}
+{
+    CodecName = "Apple ProRes Decoder";
+    CodecType = 1634755438;
+    DecoderID = "com.apple.videotoolbox.videodecoder.prores";
+}
+{
+    CodecName = "Apple ProRes Decoder";
+    CodecType = 1634755443;
+    DecoderID = "com.apple.videotoolbox.videodecoder.prores";
+}
+{
+    CodecName = "Apple ProRes Decoder";
+    CodecType = 1634755439;
+    DecoderID = "com.apple.videotoolbox.videodecoder.prores";
+}
+{
+    CodecName = "Apple ProRes RAW Decoder";
+    CodecType = 1634759272;
+    DecoderID = "com.apple.videotoolbox.videodecoder.prores-raw";
+}
+{
+    CodecName = "Apple ProRes RAW Decoder";
+    CodecType = 1634759278;
+    DecoderID = "com.apple.videotoolbox.videodecoder.prores-raw";
+}
+{
+    CodecName = "DV25/50";
+    CodecType = 1685480224;
+    DecoderID = "com.apple.videotoolbox.videodecoder.dv";
+    IsHardwareAccelerated = 0;
+    PerformanceRating = 0;
+}
+{
+    CodecName = "DV25/50";
+    CodecType = 1685480304;
+    DecoderID = "com.apple.videotoolbox.videodecoder.dv";
+    IsHardwareAccelerated = 0;
+    PerformanceRating = 0;
+}
+{
+    CodecName = "DV25/50";
+    CodecType = 1685483632;
+    DecoderID = "com.apple.videotoolbox.videodecoder.dv";
+    IsHardwareAccelerated = 0;
+    PerformanceRating = 0;
+}
+{
+    CodecName = "DV25/50";
+    CodecType = 1685468526;
+    DecoderID = "com.apple.videotoolbox.videodecoder.dv";
+    IsHardwareAccelerated = 0;
+    PerformanceRating = 0;
+}
+{
+    CodecName = "DV25/50";
+    CodecType = 1685468528;
+    DecoderID = "com.apple.videotoolbox.videodecoder.dv";
+    IsHardwareAccelerated = 0;
+    PerformanceRating = 0;
+}
+{
+    CodecName = Depth;
+    CodecType = 1684369512;
+    DecoderID = "com.apple.videotoolbox.videodecoder.depth-hevc:com.apple.videotoolbox.videodecoder.hevc.vcp";
+}
+{
+    CodecName = Disparity;
+    CodecType = 1684632424;
+    DecoderID = "com.apple.videotoolbox.videodecoder.disparity-hevc:com.apple.videotoolbox.videodecoder.hevc.vcp";
+}
+{
+    CodecName = "DolbyVision (HEVC)";
+    CodecType = 1685481521;
+    DecoderID = "com.apple.videotoolbox.videodecoder.dolbyvision.hevc:com.apple.videotoolbox.videodecoder.hevc.vcp";
+}
+{
+    CodecName = "H.263 Video Decoder";
+    CodecType = 1748121139;
+    DecoderID = "com.apple.videotoolbox.videodecoder.h263";
+    PerformanceRating = 0;
+}
+{
+    CodecName = JPEG;
+    CodecType = 1785750887;
+    DecoderID = "com.apple.videotoolbox.videodecoder.jpeg";
+    IsHardwareAccelerated = 0;
+    PerformanceRating = "-30";
+}
+{
+    CodecName = "JPEG applejpeg";
+    CodecType = 1785750887;
+    DecoderID = "com.apple.videotoolbox.videodecoder.jpeg.applejpeg";
+    IsHardwareAccelerated = 0;
+    PerformanceRating = "-20";
+}
+{
+    CodecName = "MPEG-2";
+    CodecType = 1836069238;
+    DecoderID = "com.apple.videotoolbox.videodecoder.mpeg2";
+    IsHardwareAccelerated = 0;
+    PerformanceRating = 0;
+}
+{
+    CodecName = "MPEG-2";
+    CodecType = 1836069494;
+    DecoderID = "com.apple.videotoolbox.videodecoder.mpeg2";
+    IsHardwareAccelerated = 0;
+    PerformanceRating = 0;
+}
+{
+    CodecName = "Muxed Alpha";
+    CodecType = 1836415073;
+    DecoderID = "com.apple.videotoolbox.videodecoder.hevc-with-alpha:com.apple.videotoolbox.videodecoder.hevc.vcp";
+}
+{
+    CodecName = "OpenDML JPEG";
+    CodecType = 1684890161;
+    DecoderID = "com.apple.videotoolbox.videodecoder.dmb1";
+    IsHardwareAccelerated = 0;
+    PerformanceRating = "-30";
+}
+{
+    CodecName = "OpenDML JPEG applejpeg";
+    CodecType = 1684890161;
+    DecoderID = "com.apple.videotoolbox.videodecoder.dmb1.applejpeg";
+    IsHardwareAccelerated = 0;
+    PerformanceRating = "-20";
+}
+{
+    CodecName = "SW AV1 Decoder";
+    CodecType = 1635135537;
+    DecoderID = "com.apple.videotoolbox.videodecoder.av1.sw";
+}
+{
+    CodecName = "Test IPB";
+    CodecType = 1768972832;
+    DecoderID = "com.apple.videotoolbox.videodecoder.ipb";
+    IsHardwareAccelerated = 0;
+    PerformanceRating = 0;
+}
+{
+    CodecName = "VCP AVC Decoder";
+    CodecType = 1635148593;
+    DecoderID = "com.apple.videotoolbox.videodecoder.avc.vcp";
+    PerformanceRating = 200;
+}
+{
+    CodecName = "VCP HEVC Decoder";
+    CodecType = 1752589105;
+    DecoderID = "com.apple.videotoolbox.videodecoder.hevc.vcp";
+}
+{
+    CodecName = "VCP MPEG4 Video Decoder";
+    CodecType = 1836070006;
+    DecoderID = "com.apple.videotoolbox.videodecoder.mp4v";
+}
+avc1 VTIsHardwareDecodeSupported=0
+hvc1 VTIsHardwareDecodeSupported=0
+vp09 VTIsHardwareDecodeSupported=0
+av01 VTIsHardwareDecodeSupported=0
+mp4v VTIsHardwareDecodeSupported=0
+apcn VTIsHardwareDecodeSupported=0
+== decoder list (29)
+avc1 requireHW=0 create=0
+  UsingHW=0
+avc1 requireHW=1 create=-12906
+hvc1 requireHW=0 create=-12909
+hvc1 requireHW=1 create=-12906

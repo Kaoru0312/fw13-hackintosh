@@ -1,0 +1,130 @@
+== 2026-11-21 16:35:36 tag=ok  uptime: 16:35  up 8 mins, 2 users, load averages: 2.44 5.49 4.11
+== boot-args: -v keepsyms=1 debug=0x100 revpatch=cpuname,sbvmm ipc_control_port_options=0 -vi2c-force-polling amfi=0x80 amfi_get_out_of_my_way=0x1 -amfipassbeta phxdebug=1 amdcst=3 
+== VoodooI2C 相關 kext
+   65    1 0xffffff80042dd000 0x13000    0x13000    com.alexandred.VoodooI2CServices (1) B9FE9E08-E3BF-311D-8200-A52D7A41591A <6 3>
+   75    1 0xffffff80042f0000 0x4e000    0x4e000    org.coolstar.VoodooGPIO (1.1) 6D611A79-9990-34AB-8D14-C0EC9845EE37 <17 7 6 3>
+   76    1 0xffffff800433e000 0x2b000    0x2b000    com.alexandred.VoodooI2C (2.9.1) 49691D8A-EA92-32CE-A2FD-24AD6DDF45A6 <75 65 58 19 17 7 6 3 1>
+   78    1 0xffffff80043bf000 0x1a000    0x1a000    as.acidanthera.voodoo.driver.PS2Controller (2.3.7) E3314D9C-A923-3BFF-8F79-8D8F7627085F <17 9 7 6 3 1>
+   82    0 0xffffff8004384000 0x3b000    0x3b000    com.alexandred.VoodooI2CHID (1) 84ED0F48-9496-3ABA-8058-728AD4BC492A <76 58 17 7 6 3>
+   84    0 0xffffff8004369000 0x1b000    0x1b000    me.kishorprins.VoodooInput (1.1.6) B5BEA2C9-6254-313A-BE09-4778DBB28F3E <58 7 6 3>
+   89    0 0xffffff80043d9000 0xd000     0xd000     as.acidanthera.voodoo.driver.PS2Keyboard (2.3.7) EFA883F4-7558-3E98-A352-E202CB3DFAAF <78 58 9 7 6 3 1>
+== ioreg：I2C 控制器與觸控板樹
++-o VoodooI2CControllerDriver  <class VoodooI2CControllerDriver, id 0x100000254, registered, matched, active, busy 0 (0 ms), retain 11>
+  +-o ECSH  <class VoodooI2CDeviceNub, id 0x100000256, registered, matched, active, busy 0 (0 ms), retain 7>
+  |     "IOName" = "FRMW0004"
+  |     "name" = <"FRMW0004">
+  +-o ECS2  <class VoodooI2CDeviceNub, id 0x100000258, registered, matched, active, busy 0 (0 ms), retain 7>
+        "IOName" = "FRMW0005"
+        "name" = <"FRMW0005">
++-o VoodooI2CControllerDriver  <class VoodooI2CControllerDriver, id 0x10000024e, registered, matched, active, busy 0 (533 ms), retain 10>
+  +-o TPAD  <class VoodooI2CDeviceNub, id 0x100000253, registered, matched, active, busy 0 (533 ms), retain 10>
+    |   "IOName" = "PIXA3854"
+    |   "name" = <"PIXA3854">
+    +-o VoodooI2CHIDDevice  <class VoodooI2CHIDDevice, id 0x100000257, registered, matched, active, busy 0 (210 ms), retain 11>
+      |   "IOPropertyMatch" = {"IOName"="PIXA3854"}
+      +-o IOHIDInterface  <class IOHIDInterface, id 0x10000026f, registered, matched, active, busy 0 (208 ms), retain 10>
+        +-o VoodooI2CPrecisionTouchpadHIDEventDriver  <class VoodooI2CPrecisionTouchpadHIDEventDriver, id 0x100000270, registered, matched, active, busy 0 (202 ms), retain 15>
+          +-o VoodooI2CMultitouchInterface  <class VoodooI2CMultitouchInterface, id 0x100000273, registered, matched, active, busy 0 (202 ms), retain 9>
+          | +-o VoodooI2CNativeEngine  <class VoodooI2CNativeEngine, id 0x100000274, registered, matched, active, busy 0 (202 ms), retain 8>
+          |   +-o VoodooInput  <class VoodooInput, id 0x100000275, !registered, !matched, active, busy 0 (190 ms), retain 8>
+          |     +-o VoodooInputSimulatorDevice  <class VoodooInputSimulatorDevice, id 0x100000276, registered, matched, active, busy 0 (104 ms), retain 9>
+          |     | +-o IOHIDInterface  <class IOHIDInterface, id 0x10000027d, registered, matched, active, busy 0 (103 ms), retain 8>
+          |     |   +-o AppleMultitouchTrackpadHIDEventDriver  <class AppleMultitouchTrackpadHIDEventDriver, id 0x100000281, registered, matched, active, busy 0 (0 ms), retain 8>
+          |     |     +-o AppleMultitouchDevice  <class AppleMultitouchDevice, id 0x100000288, registered, matched, active, busy 0 (0 ms), retain 8>
+          |     |       +-o AppleMultitouchDeviceUserClient  <class AppleMultitouchDeviceUserClient, id 0x10000055f, !registered, !matched, active, busy 0, retain 6>
+          |     +-o VoodooInputActuatorDevice  <class VoodooInputActuatorDevice, id 0x100000279, registered, matched, active, busy 0 (3 ms), retain 8>
+          |     | +-o IOHIDInterface  <class IOHIDInterface, id 0x100000280, registered, matched, active, busy 0 (3 ms), retain 7>
+          |     |   +-o AppleActuatorHIDEventDriver  <class AppleActuatorHIDEventDriver, id 0x100000282, !registered, !matched, active, busy 0 (0 ms), retain 6>
+          |     |     +-o AppleActuatorDevice  <class AppleActuatorDevice, id 0x100000286, registered, matched, active, busy 0 (0 ms), retain 9>
+          |     |       +-o AppleActuatorDeviceUserClient  <class AppleActuatorDeviceUserClient, id 0x100000560, !registered, !matched, active, busy 0, retain 6>
+          |     +-o TrackpointDevice  <class TrackpointDevice, id 0x10000027a, registered, matched, active, busy 0 (185 ms), retain 8>
+          |       +-o IOHIDPointingEventDevice  <class IOHIDPointingEventDevice, id 0x1000002e2, registered, matched, active, busy 0 (185 ms), retain 7>
+          |       | +-o IOHIDInterface  <class IOHIDInterface, id 0x1000002e6, registered, matched, active, busy 0 (185 ms), retain 8>
+          |       |   +-o IOHIDEventDriver  <class IOHIDEventDriver, id 0x100000484, registered, matched, active, busy 0 (0 ms), retain 8>
+          |       |     +-o IOHIDEventServiceUserClient  <class IOHIDEventServiceUserClient, id 0x10000055b, !registered, !matched, active, busy 0, retain 6>
+          |       +-o IOHIDSystem  <class IOHIDSystem, id 0x1000002d1, registered, matched, active, busy 0 (1 ms), retain 17>
+          |         +-o IOHIDUserClient  <class IOHIDUserClient, id 0x10000054e, !registered, !matched, active, busy 0, retain 5>
+          |         +-o IOHIDEventSystemUserClient  <class IOHIDEventSystemUserClient, id 0x100000555, !registered, !matched, active, busy 0, retain 5>
+          |         +-o IOHIDParamUserClient  <class IOHIDParamUserClient, id 0x10000057d, !registered, !matched, active, busy 0, retain 5>
+          |         +-o IOHIDParamUserClient  <class IOHIDParamUserClient, id 0x10000058c, !registered, !matched, active, busy 0, retain 5>
+          |         +-o IOHIDParamUserClient  <class IOHIDParamUserClient, id 0x1000005e3, !registered, !matched, active, busy 0, retain 5>
+          |         +-o IOHIDParamUserClient  <class IOHIDParamUserClient, id 0x1000005e4, !registered, !matched, active, busy 0, retain 5>
+          |         +-o IOHIDParamUserClient  <class IOHIDParamUserClient, id 0x100000678, !registered, !matched, active, busy 0, retain 5>
+          +-o IOHIDEventServiceUserClient  <class IOHIDEventServiceUserClient, id 0x100000556, !registered, !matched, active, busy 0, retain 6>
+== ioreg：HID 裝置
++-o VoodooI2CHIDDevice  <class VoodooI2CHIDDevice, id 0x100000257, registered, matched, active, busy 0 (210 ms), retain 11>
+  |   "HIDDescriptorAddress" = 32
+  |   "MaxInputReportSize" = 35
+  |   "ReportDescriptor" = <05010902a101850205010901a10005091901290215002501750195028102050d09327501950181027505950181030501751095013500450016008026ff7f0930812616008026ff7f09318126c0c0050d0905a1018501050d0922a1020947094215002501750195028102950681030951250f750895018102050109307510550e65113500465a0427390500008102093146da02276c0300008102c0050d0922a1020947094215002501750195028102950681030951250f750895018102050109307510550e65113500465a0427390500008102093146da02276c0300008102c0050d0922a1020947094215002501750195028102950681030951250f750895018102050109307510550e65113500465a0427390500008102093146da02276c0300008102c0050d0922a1020947094215002501750195028102950681030951250f750895018102050109307510550e65113500465a0427390500008102093146da02276c0300008102c0050d0922a1020947094215002501750195028102950681030951250f750895018102050109307510550e65113500465a0427390500008102093146da02276c0300008102c0050d09541500250575089501810205090901090209031500250175019503810295058103050d0956550c660110350047ffff0000150027ffff0000751095018102050d095515002505750895018503b102050d09591500250f750895018504b1020600ff85057508150009c625089501b10209c726ff009520b102c0050d090ea101050d0922a10209521500250a750895018506b102c0050d0922a1000957095815002501750195028507b1029506b103c0050d096015002501750195018508b1029507b103c00600ff0901a10185420906150026ff0075089503b1020600ff0905150026ff0075089600018541b10285430906150026ff0075089503b102c0>
+  |   "VendorID" = 2362
+  |   "HIDDescriptor" = {"VendorID"=2362,"OutputRegister"=37,"VersionID"=1796,"MaxInputLength"=37,"InputRegister"=36,"ReportDescLength"=687,"CommandRegister"=34,"BCDVersion"=256,"ProductID"=628,"ReportDescRegister"=33,"MaxOutputLength"=0,"HIDDescLength"=30,"DataRegister"=35}
+  |   "IOPropertyMatch" = {"IOName"="PIXA3854"}
+  |   "ProductID" = 628
+  +-o IOHIDInterface  <class IOHIDInterface, id 0x10000026f, registered, matched, active, busy 0 (208 ms), retain 10>
+    |   "VendorID" = 2362
+    |   "ProductID" = 628
+    |   "ReportDescriptor" = <05010902a101850205010901a10005091901290215002501750195028102050d09327501950181027505950181030501751095013500450016008026ff7f0930812616008026ff7f09318126c0c0050d0905a1018501050d0922a1020947094215002501750195028102950681030951250f750895018102050109307510550e65113500465a0427390500008102093146da02276c0300008102c0050d0922a1020947094215002501750195028102950681030951250f750895018102050109307510550e65113500465a0427390500008102093146da02276c0300008102c0050d0922a1020947094215002501750195028102950681030951250f750895018102050109307510550e65113500465a0427390500008102093146da02276c0300008102c0050d0922a1020947094215002501750195028102950681030951250f750895018102050109307510550e65113500465a0427390500008102093146da02276c0300008102c0050d0922a1020947094215002501750195028102950681030951250f750895018102050109307510550e65113500465a0427390500008102093146da02276c0300008102c0050d09541500250575089501810205090901090209031500250175019503810295058103050d0956550c660110350047ffff0000150027ffff0000751095018102050d095515002505750895018503b102050d09591500250f750895018504b1020600ff85057508150009c625089501b10209c726ff009520b102c0050d090ea101050d0922a10209521500250a750895018506b102c0050d0922a1000957095815002501750195028507b1029506b103c0050d096015002501750195018508b1029507b103c00600ff0901a10185420906150026ff0075089503b1020600ff0905150026ff0075089600018541b10285430906150026ff0075089503b102c0>
+    |   "MaxInputReportSize" = 35
+    +-o VoodooI2CPrecisionTouchpadHIDEventDriver  <class VoodooI2CPrecisionTouchpadHIDEventDriver, id 0x100000270, registered, matched, active, busy 0 (202 ms), retain 15>
+      |   "VendorIDSource" = 0
+      |   "VendorID" = 2362
+      |   "ProductID" = 628
+      +-o VoodooI2CMultitouchInterface  <class VoodooI2CMultitouchInterface, id 0x100000273, registered, matched, active, busy 0 (202 ms), retain 9>
+      | |   "VendorID" = 2362
+      | |   "ProductID" = 628
+      | +-o VoodooI2CNativeEngine  <class VoodooI2CNativeEngine, id 0x100000274, registered, matched, active, busy 0 (202 ms), retain 8>
+      |   +-o VoodooInput  <class VoodooInput, id 0x100000275, !registered, !matched, active, busy 0 (190 ms), retain 8>
+      |     +-o VoodooInputSimulatorDevice  <class VoodooInputSimulatorDevice, id 0x100000276, registered, matched, active, busy 0 (104 ms), retain 9>
+      |     | |   "MaxInputReportSize" = 1388
+      |     | |   "ReportDescriptor" = <05010902a1010901a1000509190129031500250185029503750181029501750581010501093009311581257f750895028106950475088101c0c0050d0905a1010600ff090c150026ff0075089510853f8122c00600ff090ca1010600ff090c150026ff0085447508966b058100c0>
+      |     | |   "VendorID" = 1452
+      |     | |   "ProductID" = 641
+      |     | +-o IOHIDInterface  <class IOHIDInterface, id 0x10000027d, registered, matched, active, busy 0 (103 ms), retain 8>
+      |     |   |   "VendorID" = 1452
+      |     |   |   "ProductID" = 641
+== ioreg：觸控事件驅動
++-o VoodooI2CPrecisionTouchpadHIDEventDriver  <class VoodooI2CPrecisionTouchpadHIDEventDriver, id 0x100000270, registered, matched, active, busy 0 (202 ms), retain 15>
+  +-o VoodooI2CMultitouchInterface  <class VoodooI2CMultitouchInterface, id 0x100000273, registered, matched, active, busy 0 (202 ms), retain 9>
+  | +-o VoodooI2CNativeEngine  <class VoodooI2CNativeEngine, id 0x100000274, registered, matched, active, busy 0 (202 ms), retain 8>
+  |   +-o VoodooInput  <class VoodooInput, id 0x100000275, !registered, !matched, active, busy 0 (190 ms), retain 8>
+  |     +-o VoodooInputSimulatorDevice  <class VoodooInputSimulatorDevice, id 0x100000276, registered, matched, active, busy 0 (104 ms), retain 9>
+  |     | +-o IOHIDInterface  <class IOHIDInterface, id 0x10000027d, registered, matched, active, busy 0 (103 ms), retain 8>
+  |     |   +-o AppleMultitouchTrackpadHIDEventDriver  <class AppleMultitouchTrackpadHIDEventDriver, id 0x100000281, registered, matched, active, busy 0 (0 ms), retain 8>
+  |     |     +-o AppleMultitouchDevice  <class AppleMultitouchDevice, id 0x100000288, registered, matched, active, busy 0 (0 ms), retain 8>
+  |     |       +-o AppleMultitouchDeviceUserClient  <class AppleMultitouchDeviceUserClient, id 0x10000055f, !registered, !matched, active, busy 0, retain 6>
+  |     +-o VoodooInputActuatorDevice  <class VoodooInputActuatorDevice, id 0x100000279, registered, matched, active, busy 0 (3 ms), retain 8>
++-o VoodooI2CMultitouchInterface  <class VoodooI2CMultitouchInterface, id 0x100000273, registered, matched, active, busy 0 (202 ms), retain 9>
+  +-o VoodooI2CNativeEngine  <class VoodooI2CNativeEngine, id 0x100000274, registered, matched, active, busy 0 (202 ms), retain 8>
+    +-o VoodooInput  <class VoodooInput, id 0x100000275, !registered, !matched, active, busy 0 (190 ms), retain 8>
+      +-o VoodooInputSimulatorDevice  <class VoodooInputSimulatorDevice, id 0x100000276, registered, matched, active, busy 0 (104 ms), retain 9>
+      | +-o IOHIDInterface  <class IOHIDInterface, id 0x10000027d, registered, matched, active, busy 0 (103 ms), retain 8>
+      |   +-o AppleMultitouchTrackpadHIDEventDriver  <class AppleMultitouchTrackpadHIDEventDriver, id 0x100000281, registered, matched, active, busy 0 (0 ms), retain 8>
+      |     +-o AppleMultitouchDevice  <class AppleMultitouchDevice, id 0x100000288, registered, matched, active, busy 0 (0 ms), retain 8>
+      |       +-o AppleMultitouchDeviceUserClient  <class AppleMultitouchDeviceUserClient, id 0x10000055f, !registered, !matched, active, busy 0, retain 6>
+      +-o VoodooInputActuatorDevice  <class VoodooInputActuatorDevice, id 0x100000279, registered, matched, active, busy 0 (3 ms), retain 8>
+      | +-o IOHIDInterface  <class IOHIDInterface, id 0x100000280, registered, matched, active, busy 0 (3 ms), retain 7>
+== ioreg：AppleMultitouch
++-o AppleMultitouchDevice  <class AppleMultitouchDevice, id 0x100000288, registered, matched, active, busy 0 (0 ms), retain 8>
+  +-o AppleMultitouchDeviceUserClient  <class AppleMultitouchDeviceUserClient, id 0x10000055f, !registered, !matched, active, busy 0, retain 6>
+== 中斷次數（powermetrics 3 秒）
+Boot arguments: -v keepsyms=1 debug=0x100 revpatch=cpuname,sbvmm ipc_control_port_options=0 -vi2c-force-polling amfi=0x80 amfi_get_out_of_my_way=0x1 -amfipassbeta phxdebug=1 amdcst=3 
+	Vector 0x46(I2CD/SMC): 711.63 interrupts/sec
+== 本次開機 VoodooI2C 日誌（kernel）
+Timestamp               Ty Process[PID:TID]
+2026-11-21 16:27:58.104 Df kernel[0:376] [com.apple.iohid:oversized] <dict ID="0"><key>IORegistryEntryID</key><integer size="64" ID="1">0x100000257</integer><key>IOName</key><string ID="2">VoodooI2CHIDDevice</string><key>Transport</key><string ID="3">I2C</string><key>VendorID</key><integer size="16" ID="4">0x93a</integer><key>ProductID</key><integer size="16" ID="5">0x274</integer><key>VersionNumber</key><integer size="16" ID="6">0x704</integer><key>Manufacturer</key><string ID="7">Apple</string><key>ReportDescriptor</key><data ID="8">BQEJAqEBhQIFAQkBoQAFCRkBKQIVACUBdQGVAoECBQ0JMnUBlQGBAnUFlQGBAwUBdRCVATUARQAWAIAm/38JMIEmFgCAJv9/CTGBJsDABQ0JBaEBhQEFDQkioQIJRwlCFQAlAXUBlQKBApUGgQMJUSUPdQiVAYECBQEJMHUQVQ5lETUARloEJzkFAACBAgkxRtoCJ2wDAACBAsAFDQkioQIJRwlCFQAlAXUBlQKBApUGgQMJUSUPdQiVAYECBQEJMHUQVQ5lETUARloEJzkFAACBAgkxRtoCJ2wDAACBAsAFDQkioQIJRwlCFQAlAXUBlQKBApUGgQMJUSUPdQiVAYECBQEJMHUQVQ5lETUARloEJzkFAACBAgkxRtoCJ2wDAACBAsAFDQkioQIJRwlCFQAlAXUBlQKBApUGgQMJUSUPdQiVAYECBQEJMHUQVQ5lETUARloEJzkFAACBAgkxRtoCJ2wDAACBAsAFDQkioQIJRwlCFQAlAXUBlQKBApUGgQMJUSUPdQiVAYECBQEJMHUQ<…>
+2026-11-21 16:27:58.106 Df kernel[0:7a] [com.apple.iohid:default] IOHIDInterface:0x10000026f start for VoodooI2CHIDDevice:0x100000257
+2026-11-21 16:27:58.116 Df kernel[0:311] (IOHIDFamily) VoodooI2CHIDDevice:0x100000257 open by VoodooI2CPrecisionTouchpadHIDEventDriver:0x100000270 (0x0)
+2026-11-21 16:27:58.121 Df kernel[0:7a] [com.apple.iohid:oversized] <dict ID="0"><key>IORegistryEntryID</key><integer size="64" ID="1">0x100000276</integer><key>IOName</key><string ID="2">VoodooInputSimulatorDevice</string><key>Transport</key><string ID="3">I2C</string><key>VendorID</key><integer size="16" ID="4">0x5ac</integer><key>ProductID</key><integer size="32" ID="5">0x281</integer><key>VersionNumber</key><integer size="32" ID="6">0x804</integer><key>Manufacturer</key><string ID="7">Apple Inc.</string><key>Product</key><string ID="8">Magic Trackpad 2</string><key>LocationID</key><integer size="32" ID="9">0x14400000</integer><key>SerialNumber</key><string ID="10">Voodoo Magic Trackpad 2 Simulator</string><key>ReportDescriptor</key><data ID="11">BQEJAqEBCQGhAAUJGQEpAxUAJQGFApUDdQGBApUBdQWBAQUBCTAJMRWBJX91CJUCgQaVBHUIgQHAwAUNCQWhAQYA/wkMFQAm/wB1CJUQhT+BIsAGAP8JDKEBBgD/CQwVACb/AIVEdQiWawWBAMA=</data></dict>
+2026-11-21 16:27:58.121 Df kernel[0:7a] [com.apple.iohid:oversized] <dict ID="0"><key>IORegistryEntryID</key><integer size="64" ID="1">0x100000279</integer><key>IOName</key><string ID="2">VoodooInputActuatorDevice</string><key>Transport</key><string ID="3">I2C</string><key>VendorID</key><integer size="16" ID="4">0x5ac</integer><key>ProductID</key><integer size="32" ID="5">0x281</integer><key>VersionNumber</key><integer size="32" ID="6">0x804</integer><key>Manufacturer</key><string ID="7">Apple Inc.</string><key>Product</key><string ID="8">Magic Trackpad 2</string><key>LocationID</key><integer size="32" ID="9">0x14400000</integer><key>SerialNumber</key><string ID="10">VoodooI2C Magic Trackpad 2 Actuator</string><key>ReportDescriptor</key><data ID="11">BgD/CQ2hAQYA/wkNFQAm/wB1CIU/lg8AgQIJDYVTlj8AkQLA</data></dict>
+2026-11-21 16:27:58.121 Df kernel[0:311] [com.apple.iohid:default] IOHIDInterface:0x10000027d start for VoodooInputSimulatorDevice:0x100000276
+2026-11-21 16:27:58.121 Df kernel[0:4f2] [com.apple.iohid:default] IOHIDInterface:0x100000280 start for VoodooInputActuatorDevice:0x100000279
+2026-11-21 16:27:58.124 Df kernel[0:4f2] (IOHIDFamily) VoodooInputActuatorDevice:0x100000279 open by AppleActuatorHIDEventDriver:0x100000282 (0x0)
+2026-11-21 16:27:58.124 Df kernel[0:311] (IOHIDFamily) VoodooInputSimulatorDevice:0x100000276 open by AppleMultitouchTrackpadHIDEventDriver:0x100000281 (0x0)
+2026-11-21 16:27:58.711 Df kernel[0:3ba] [com.apple.iohid:oversized] <dict ID="0"><key>IORegistryEntryID</key><integer size="64" ID="1">0x1000002e2</integer><key>IOName</key><string ID="2">IOHIDPointingEventDevice</string><key>Transport</key><string ID="3">I2C</string><key>VendorID</key><integer size="32" ID="4">0x5ac</integer><key>ProductID</key><integer size="32" ID="5">0xffff</integer><key>Manufacturer</key><string ID="6">Apple</string><key>Product</key><string ID="7">Mouse</string><key>ReportDescriptor</key><data ID="8">BQEJAqEBBQkZASkIFQAlAZUIdQGBApUAdQGBAAUBCQGhAAkwCTEWAYAm/382AABGAABlAFUACTJ1EJUDgQaVAXUQFgGAJv9/CTiBBsDA</data></dict>
+2026-11-21 16:28:01.297 F  kernel[0:30a] [com.apple.iohid:default] VoodooI2CHIDDevice:0x100000257 Matching has vendor DeviceUsagePage : ff0c bundleIdentifier com.apple.AppleUserHIDDrivers ioclass AppleUserHIDEventService but transport and vendorID is missing
+2026-11-21 16:28:01.297 F  kernel[0:30a] [com.apple.iohid:default] VoodooInputSimulatorDevice:0x100000276 Matching has vendor DeviceUsagePage : ff0c bundleIdentifier com.apple.AppleUserHIDDrivers ioclass AppleUserHIDEventService but transport and vendorID is missing
+2026-11-21 16:28:01.375 F  kernel[0:730] [com.apple.iohid:default] VoodooI2CHIDDevice:0x100000257 Matching has vendor DeviceUsagePage : ff0c bundleIdentifier com.apple.AppleUserHIDDrivers ioclass AppleUserHIDEventService but transport and vendorID is missing
+2026-11-21 16:28:01.375 F  kernel[0:731] [com.apple.iohid:default] VoodooInputSimulatorDevice:0x100000276 Matching has vendor DeviceUsagePage : ff0c bundleIdentifier com.apple.AppleUserHIDDrivers ioclass AppleUserHIDEventService but transport and vendorID is missing
+2026-11-21 16:28:01.558 Df kernel[0:779] Boot args: -v keepsyms=1 debug=0x100 revpatch=cpuname,sbvmm ipc_control_port_options=0 -vi2c-force-polling amfi=0x80 amfi_get_out_of_my_way=0x1 -amfipassbeta phxdebug=1 amdcst=3
+2026-11-21 16:28:01.558 Df kernel[0:77b] Boot args: -v keepsyms=1 debug=0x100 revpatch=cpuname,sbvmm ipc_control_port_options=0 -vi2c-force-polling amfi=0x80 amfi_get_out_of_my_way=0x1 -amfipassbeta phxdebug=1 amdcst=3
+== dmesg

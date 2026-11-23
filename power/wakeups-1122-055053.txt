@@ -1,0 +1,188 @@
+== 2026-11-22 05:50:53  uptime 36 mins
+== 背景程式
+  9.2 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+  3.5 /Applications/Claude.app/Contents/MacOS/Claude
+  0.5 /usr/libexec/opendirectoryd
+  0.4 /usr/sbin/notifyd
+  0.4 /usr/libexec/airportd
+  0.3 /sbin/launchd
+  0.3 /System/Volumes/Preboot/Cryptexes/App/System/Applications/Safari.app/Contents/MacOS/Safari
+  0.1 /usr/libexec/logd
+== 封裝功耗 11818 mW  C0 51‰
+
+== 0. 等 45 秒讓觸控板輪詢降到閒置速度（50 ms）——這段時間請完全不要碰觸控板和鍵盤
+  還有 45 秒
+  還有 30 秒
+  還有 15 秒
+
+== 1. powermetrics interrupts（5 秒）
+****  Interrupt distribution ****
+
+CPU 0:
+	Vector 0x46(I2CD/SMC): 561.09 interrupts/sec
+	Vector 0x72(NVME/MHSP): 3.40 interrupts/sec
+	Vector 0x73(XHC4/MHSP): 0.40 interrupts/sec
+	Vector 0x74(XHC3/MHSP): 0.40 interrupts/sec
+	Vector 0x75(XHC1/MHSP): 0.40 interrupts/sec
+	Vector 0x76(XHC0): 0.40 interrupts/sec
+	Vector 0x78(WLAN): 37.19 interrupts/sec
+	Vector 0xdd(TMR): 700.86 interrupts/sec
+	Vector 0xde(IPI): 788.04 interrupts/sec
+CPU 1:
+	Vector 0xdd(TMR): 0.80 interrupts/sec
+	Vector 0xde(IPI): 42.19 interrupts/sec
+CPU 2:
+	Vector 0xdd(TMR): 625.07 interrupts/sec
+	Vector 0xde(IPI): 762.05 interrupts/sec
+CPU 3:
+	Vector 0xdd(TMR): 0.80 interrupts/sec
+	Vector 0xde(IPI): 37.79 interrupts/sec
+CPU 4:
+	Vector 0xdd(TMR): 501.50 interrupts/sec
+	Vector 0xde(IPI): 736.25 interrupts/sec
+CPU 5:
+	Vector 0xdd(TMR): 1.20 interrupts/sec
+	Vector 0xde(IPI): 38.39 interrupts/sec
+CPU 6:
+	Vector 0xdd(TMR): 415.72 interrupts/sec
+	Vector 0xde(IPI): 557.49 interrupts/sec
+CPU 7:
+	Vector 0xdd(TMR): 0.40 interrupts/sec
+	Vector 0xde(IPI): 31.19 interrupts/sec
+CPU 8:
+	Vector 0xdd(TMR): 229.95 interrupts/sec
+	Vector 0xde(IPI): 349.53 interrupts/sec
+CPU 9:
+	Vector 0xdd(TMR): 0.20 interrupts/sec
+	Vector 0xde(IPI): 27.79 interrupts/sec
+CPU 10:
+	Vector 0xdd(TMR): 161.77 interrupts/sec
+	Vector 0xde(IPI): 211.36 interrupts/sec
+CPU 11:
+	Vector 0xdd(TMR): 0.60 interrupts/sec
+	Vector 0xde(IPI): 22.40 interrupts/sec
+
+
+
+== 2–4. dtrace（20 秒）
+
+---- kernel_task CPU stack（前 12，997 Hz 取樣；20 秒共約 19940 個取樣/CPU）
+
+
+              com.luuumi.PhxAccel`NMXDisplayPipe::performTransaction(IOAccelDisplayPipeTransaction2*)+0x1226
+              kernel`IOWorkLoop::runEventSources()+0xee
+              kernel`IOWorkLoop::threadMain()+0x47
+              kernel`call_continuation+0x2e
+               44
+
+              kernel`assert_wait_deadline+0xdf
+              kernel`call_continuation+0x2e
+               63
+
+              0xffffff80105a69de
+               72
+
+              com.luuumi.PhxAccel`NMXDisplayPipe::performTransaction(IOAccelDisplayPipeTransaction2*)+0x121a
+              kernel`IOWorkLoop::runEventSources()+0xee
+              kernel`IOWorkLoop::threadMain()+0x47
+              kernel`call_continuation+0x2e
+               99
+
+              kernel`processor_idle+0x10b
+              129
+
+              kernel`processor_idle+0x11c
+              131
+
+              com.luuumi.PhxAccel`NMXDisplayPipe::performTransaction(IOAccelDisplayPipeTransaction2*)+0x1231
+              kernel`IOWorkLoop::runEventSources()+0xee
+              kernel`IOWorkLoop::threadMain()+0x47
+              kernel`call_continuation+0x2e
+              160
+
+              kernel`idle_thread+0x36
+              248
+
+              kernel`thread_block_reason+0x121
+              263
+
+              0xffffff80105a69a8
+              507
+
+              kernel`machine_idle+0x2f3
+              kernel`call_continuation+0x2e
+              910
+
+              0xffffff80107fcef5
+              kernel`idle_thread+0x5c
+              kernel`call_continuation+0x2e
+           231201
+
+---- thread_call 排程次數（呼叫端 stack）（20 秒，前 25）
+
+
+              com.luuumi.PhxAccel`NMXAccel::fanWorker(void*, void*)+0x9f
+              kernel`0xffffff800c7bd3b0+0x2d8
+               20
+
+              0xffffff80107e3240
+              kernel`0xffffff800c7bd3b0+0x2d8
+               40
+
+              com.luuumi.PhxAccel`PhxAMDFB::vblFire(void*, void*)+0x1d3
+              kernel`0xffffff800c7bd3b0+0x2d8
+             2383
+
+---- IOTimerEventSource（20 秒，前 15）
+
+  _ZN18IOTimerEventSource15timeoutSignaledEPvS0_    
+              kernel`0xffffff800c7bc630+0x48
+              kernel`timer_queue_expire_with_options+0x205
+              kernel`timer_intr+0x83
+              kernel`rtclock_intr+0x2e
+              160
+  _ZN18IOTimerEventSource17timeoutAndReleaseEPvS0_  
+              kernel`0xffffff800c7bc630+0x48
+              kernel`call_continuation+0x2e
+             1179
+
+---- 中斷事件來源（20 秒，前 15）
+
+  _ZN22IOInterruptEventSource23normalInterruptOccurredEPvP9IOServicei
+              0xffffff8010683f25
+              0xffffff8010687c63
+              0xffffff801067e533
+               28
+  _ZN28IOFilterInterruptEventSource23normalInterruptOccurredEPvP9IOServicei
+              com.apple.iokit.IOPCIFamily`IOPCIMessagedInterruptController::handleInterrupt(void*, IOService*, int)+0x119
+              com.apple.driver.AppleACPIPlatform`AppleACPICPUInterruptController::handleInterrupt(void*, IOService*, int)+0x65
+              kernel`interrupt+0xff
+              163
+  _ZN22IOInterruptEventSource23normalInterruptOccurredEPvP9IOServicei
+              kernel`IOCommandGate::runAction(int (*)(OSObject*, void*, void*, void*, void*), void*, void*, void*, void*)+0xa8
+              com.apple.iokit.IOAcceleratorFamily2`IOAccelDisplayPipeUserClient2::transactionEnd(IOAccelDisplayPipeTransactionArgs*)+0x22d
+              kernel`IOUserClient::callExternalMethod(unsigned int, IOExternalMethodArguments*)+0x89
+              600
+  _ZN22IOInterruptEventSource23normalInterruptOccurredEPvP9IOServicei
+              com.apple.iokit.IOAcceleratorFamily2`IOAccelDisplayPipe::transaction_interrupt_gated()+0x55
+              kernel`IOWorkLoop::runEventSources()+0xee
+              kernel`IOWorkLoop::threadMain()+0x47
+              601
+  _ZN22IOInterruptEventSource23normalInterruptOccurredEPvP9IOServicei
+              com.apple.iokit.IOAcceleratorFamily2`IOAccelDisplayPipe::signalTransactionInterrupt(void*)+0x34
+              com.luuumi.PhxAccel`PhxAMDFB::vblFire(void*, void*)+0xfe
+              kernel`0xffffff800c7bc630+0x48
+              601
+  _ZN22IOInterruptEventSource23normalInterruptOccurredEPvP9IOServicei
+              com.apple.iokit.IOPCIFamily`IOPCIMessagedInterruptController::handleInterrupt(void*, IOService*, int)+0x119
+              com.apple.driver.AppleACPIPlatform`AppleACPICPUInterruptController::handleInterrupt(void*, IOService*, int)+0x65
+              kernel`interrupt+0xff
+              606
+  _ZN22IOInterruptEventSource23normalInterruptOccurredEPvP9IOServicei
+              com.apple.iokit.IOGraphicsFamily`IOFramebuffer::handleVBL(IOFramebuffer*, void*)+0x18d
+              kernel`0xffffff800c7bc630+0x48
+              kernel`0xffffff800c7bd3b0+0x2d8
+             1199
+
+
+結果存在 /Users/kaoru/fw13-hackintosh/power/wakeups-1122-055053.txt

@@ -1,0 +1,11 @@
+time      lid     batt_W   pkg_W  C0‰  temp   %   source
+03:02:11  open      -4.19   14.48  114   63.6  100  Battery Power
+03:02:21  open      -4.19   21.41  117   58.4  100  Battery Power
+03:02:31  open      -4.19   15.16  116   58.4  100  Battery Power
+03:02:42  open      -4.19   21.22  155   76.4  100  Battery Power
+03:02:52  open      -4.19   14.86  172   70.4  100  Battery Power
+03:03:02  closed    -4.19   10.44   85   55.1  100  Battery Power
+03:03:12  closed   -19.86   10.17   83   52.8  100  Battery Power
+03:03:22  closed   -19.86   10.14   83   51.2  100  Battery Power
+03:03:33  closed   -19.86   10.06   85   50.3  100  Battery Power
+03:03:43  closed   -19.86   10.84  123   62.6  100  Battery Power

@@ -1,0 +1,212 @@
+== 2026-11-22 13:09:19  uptime  6:46
+== check（只讀）
+  phx-fb-mc-base 0x8000000000  phx-debug Yes
+  SMU GetEnabledSmuFeatures(lo) -> kr 0x00000000 resp 0x01 out 0xfbfff7ff
+  fw_shared 大小 148 bytes（sq @16, smu_dpm @120, drm_key @124）
+  配置：VCPU BO +0xc000000（MC 0x800c000000）fw_shared +0xc0a0000  ring +0xc100000（16384 bytes）
+  VRAM +0xc000000..+0xc200000：非 0 348433、0xFFFFFFFF 9（共 524288 dword）；前 8 個： 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+  3 秒內沒有任何變化 → 是殘留資料，沒人在用（up 會先清 0）
+== watchdog：4 分鐘後自動重開，跑完會取消
+== check（只讀）
+  phx-fb-mc-base 0x8000000000  phx-debug Yes
+  SMU GetEnabledSmuFeatures(lo) -> kr 0x00000000 resp 0x01 out 0xfbfff7ff
+  fw_shared 大小 148 bytes（sq @16, smu_dpm @120, drm_key @124）
+  配置：VCPU BO +0xc000000（MC 0x800c000000）fw_shared +0xc0a0000  ring +0xc100000（16384 bytes）
+  VRAM +0xc000000..+0xc200000：非 0 348433、0xFFFFFFFF 9（共 524288 dword）；前 8 個： 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+  3 秒內沒有任何變化 → 是殘留資料，沒人在用（up 會先清 0）
+== 1. PSP 載 VCN 韌體  /Users/kaoru/fw13-hackintosh/vcn/fw/vcn_4_0_2.bin：size 403856 ip 4 ucode_version 0x09118037 ucode_size 403600 offset 0x100
+  psp LOAD_IP_FW VCN        type 13 size 403600 @fwbuf+0x0 -> kr 0x00000000 status 0x00000000 70000 us fw_addr 0x0000008008a10000
+== 2. SMU PowerUpVcn（VCN 預設斷電）
+  smu PowerUpVcn     msg 0x07 arg 0x00000000 -> resp 0x01 (OK)  out 0x00000000  1 ms
+  UVD_POWER_STATUS         [0x07e02] = 0x00000101
+  UVD_STATUS               [0x07f43] = 0xdeadbeef
+  UVD_DPG_PAUSE            [0x07e14] = 0x00000000
+  VCN_RB_ENABLE            [0x07e85] = 0x000001fb
+  UVD_RB_BASE_LO           [0x07eea] = 0xdeadbeef
+  UVD_RB_BASE_HI           [0x07eeb] = 0xdeadbeef
+  UVD_RB_SIZE              [0x07eec] = 0xdeadbeef
+  UVD_RB_RPTR              [0x07eac] = 0x00000100
+  UVD_RB_WPTR              [0x07ead] = 0x00000100
+  VCN_RB1_DB_CTRL          [0x07e72] = 0x40000008
+  UVD_VCPU_CNTL            [0x07f96] = 0xffffffff
+  UVD_MASTINT_EN           [0x07ee1] = 0xdeadbeef
+  UVD_LMI_CTRL             [0x080b0] = 0xdeadbeef
+  UVD_GFX10_ADDR_CONFIG    [0x07e42] = 0x00000242
+== 3. fw_shared @+0xc0a0000、清空 ring @+0xc100000
+  present_flag_0 0x00000814（含 DRM key inject / ASD handshaking）
+  清 0 VCPU BO（stack + context，640 KiB，跟 Linux amdgpu_vcn_resume 一樣）
+== 4. UVD_POWER_STATUS：anti-hang + 動態電源閘控
+  wreg UVD_POWER_STATUS           [0x07e02] = 0x00000101  readback 0x00000101
+  wreg UVD_POWER_STATUS           [0x07e02] = 0x00000105  readback 0x00000105
+== 5. DPG SRAM 清單（vcn_v4_0_start_dpg_mode，indirect）→ PSP VCN0_RAM
+  sram UVD_VCPU_CNTL (CLK_EN|BLK_RST)     off 0x000d6 = 0x1ff00200
+  sram UVD_MASTINT_EN (0)                 off 0x00021 = 0x00000000
+  sram UVD_LMI_CTRL                       off 0x001f0 = 0x00307308
+  sram UVD_MPC_CNTL                       off 0x00114 = 0x00000010
+  sram UVD_MPC_SET_MUXA0                  off 0x00116 = 0x040c2040
+  sram UVD_MPC_SET_MUXB0                  off 0x00118 = 0x040c2040
+  sram UVD_MPC_SET_MUX                    off 0x0011a = 0x00000088
+  sram LMI_VCPU_CACHE_BAR_LOW (PSP)       off 0x00184 = 0x00000000
+  sram LMI_VCPU_CACHE_BAR_HIGH (PSP)      off 0x00185 = 0x00000000
+  sram VCPU_CACHE_OFFSET0                 off 0x000c0 = 0x00000000
+  sram VCPU_CACHE_SIZE0 (PSP)             off 0x000c1 = 0x00000000
+  sram LMI_VCPU_CACHE1_BAR_LOW (PSP)      off 0x001b0 = 0x00000000
+  sram LMI_VCPU_CACHE1_BAR_HIGH (PSP)     off 0x001b1 = 0x00000000
+  sram VCPU_CACHE_OFFSET1                 off 0x000c2 = 0x00000000
+  sram VCPU_CACHE_SIZE1 (stack)           off 0x000c3 = 0x00020000
+  sram LMI_VCPU_CACHE2_BAR_LOW (context)  off 0x001b4 = 0x0c020000
+  sram LMI_VCPU_CACHE2_BAR_HIGH (context) off 0x001b5 = 0x00000080
+  sram VCPU_CACHE_OFFSET2                 off 0x000c4 = 0x00000000
+  sram VCPU_CACHE_SIZE2 (context)         off 0x000c5 = 0x00080000
+  sram LMI_VCPU_NC0_BAR_LOW (fw_shared)   off 0x00180 = 0x0c0a0000
+  sram LMI_VCPU_NC0_BAR_HIGH (fw_shared)  off 0x00181 = 0x00000080
+  sram VCPU_NONCACHE_OFFSET0              off 0x000d2 = 0x00000000
+  sram VCPU_NONCACHE_SIZE0                off 0x000d3 = 0x00001000
+  sram UVD_GFX10_ADDR_CONFIG              off 0x0c042 = 0x00000242
+  sram UVD_VCPU_CNTL (CLK_EN)             off 0x000d6 = 0x0ff00200
+  sram UVD_LMI_CTRL2                      off 0x001ee = 0x003e0000
+  sram UVD_MASTINT_EN (VCPU_EN)           off 0x00021 = 0x00000002
+  psp LOAD_IP_FW VCN0_RAM   type 49 size 216 @fwbuf+0x100000 -> kr 0x00000000 status 0x00000000 1000 us fw_addr 0x0000000000000000
+  UVD_POWER_STATUS         [0x07e02] = 0x00000105
+  UVD_STATUS               [0x07f43] = 0xdeadbeef
+  UVD_DPG_PAUSE            [0x07e14] = 0x00000000
+  VCN_RB_ENABLE            [0x07e85] = 0x000001fb
+  UVD_RB_BASE_LO           [0x07eea] = 0x0c100000
+  UVD_RB_BASE_HI           [0x07eeb] = 0x00000080
+  UVD_RB_SIZE              [0x07eec] = 0x00001000
+  UVD_RB_RPTR              [0x07eac] = 0x00000100
+  UVD_RB_WPTR              [0x07ead] = 0x00000100
+  VCN_RB1_DB_CTRL          [0x07e72] = 0x40000008
+  UVD_VCPU_CNTL            [0x07f96] = 0xffffffff
+  UVD_MASTINT_EN           [0x07ee1] = 0xdeadbeef
+  UVD_LMI_CTRL             [0x080b0] = 0xdeadbeef
+  UVD_GFX10_ADDR_CONFIG    [0x07e42] = 0x00000242
+== 6. unified ring @+0xc100000（MC 0x800c100000），直接寫 WPTR（不用 doorbell）
+  wreg UVD_RB_BASE_LO             [0x07eea] = 0x0c100000  readback 0x0c100000
+  wreg UVD_RB_BASE_HI             [0x07eeb] = 0x00000080  readback 0x00000080
+  wreg UVD_RB_SIZE                [0x07eec] = 0x00001000  readback 0x00001000
+  wreg VCN_RB_ENABLE (RB1 off)    [0x07e85] = 0x000001fb  readback 0x000001fb
+  wreg UVD_RB_RPTR                [0x07eac] = 0x00000000  readback 0x00000000
+  wreg UVD_RB_WPTR                [0x07ead] = 0x00000000  readback 0x00000000
+  wreg UVD_RB_WPTR (= RPTR)       [0x07ead] = 0x00000000  readback 0x00000000
+  wreg VCN_RB_ENABLE (RB1 on)     [0x07e85] = 0x000001ff  readback 0x000001ff
+  UVD_STATUS 讀回 0xdeadbeef
+  UVD_POWER_STATUS         [0x07e02] = 0x00000105
+  UVD_STATUS               [0x07f43] = 0xdeadbeef
+  UVD_DPG_PAUSE            [0x07e14] = 0x00000000
+  VCN_RB_ENABLE            [0x07e85] = 0x000001ff
+  UVD_RB_BASE_LO           [0x07eea] = 0x0c100000
+  UVD_RB_BASE_HI           [0x07eeb] = 0x00000080
+  UVD_RB_SIZE              [0x07eec] = 0x00001000
+  UVD_RB_RPTR              [0x07eac] = 0x00000000
+  UVD_RB_WPTR              [0x07ead] = 0x00000000
+  VCN_RB1_DB_CTRL          [0x07e72] = 0x40000008
+  UVD_VCPU_CNTL            [0x07f96] = 0xffffffff
+  UVD_MASTINT_EN           [0x07ee1] = 0xdeadbeef
+  UVD_LMI_CTRL             [0x080b0] = 0xdeadbeef
+  UVD_GFX10_ADDR_CONFIG    [0x07e42] = 0x00000242
+== up 完成。下一步：vcnctl ringtest
+== ringtest（VCN_ENC_CMD_END + 63 NOP，同 amdgpu_vcn_enc_ring_test_ring）
+  開始 RPTR 0x0 WPTR 0x0
+  wreg UVD_RB_WPTR                [0x07ead] = 0x00000040  readback 0x00000040
+  RPTR 0x0 -> 0x40（1 ms）  ✅ VCN 有在讀 ring
+  UVD_POWER_STATUS         [0x07e02] = 0x00000106
+  UVD_STATUS               [0x07f43] = 0x00000006
+  UVD_DPG_PAUSE            [0x07e14] = 0x00000000
+  VCN_RB_ENABLE            [0x07e85] = 0x000001ff
+  UVD_RB_BASE_LO           [0x07eea] = 0x0c100000
+  UVD_RB_BASE_HI           [0x07eeb] = 0x00000080
+  UVD_RB_SIZE              [0x07eec] = 0x00001000
+  UVD_RB_RPTR              [0x07eac] = 0x00000040
+  UVD_RB_WPTR              [0x07ead] = 0x00000040
+  VCN_RB1_DB_CTRL          [0x07e72] = 0x40000008
+  UVD_VCPU_CNTL            [0x07f96] = 0xffffffff
+  UVD_MASTINT_EN           [0x07ee1] = 0xdeadbeef
+  UVD_LMI_CTRL             [0x080b0] = 0xdeadbeef
+  UVD_GFX10_ADDR_CONFIG    [0x07e42] = 0x00000242
+== ibtest（decode create + destroy msg，同 amdgpu_vcn_dec_sw_ring_test_ib）
+  hdp flush dword 0xe17  IB +0xc110000  msg +0xc120000  fence +0xc108000
+  RPTR 0x40 WPTR 0x40 VCN_RB_ENABLE 0x1ff
+  IB1 +0xc110000:
+    00000010 30000002 3c1201be 00000027 00000010 30000001 00000003 0000009c
+    0000008c 00000001 00000001 00000080 0c120000 00000000 00000000 00000000
+-- job 1：create msg（seq 1）
+  wreg UVD_RB_WPTR                [0x07ead] = 0x00000080  readback 0x00000080
+  fence = 0x1（等 0x1，1 ms）RPTR 0x40 -> 0x80  ✅
+  msg(create) +0xc120000:
+    00000028 00000038 00000001 00000000 00000001 00000000 00000001 00000028
+    00000010 00000000 00000007 00000000 00000780 00000440 00000000 00000000
+-- job 2：destroy msg（seq 2）
+  wreg UVD_RB_WPTR                [0x07ead] = 0x000000c0  readback 0x000000c0
+  fence = 0x2（等 0x2，1 ms）RPTR 0x80 -> 0xc0  ✅
+  msg(destroy) +0xc122000:
+    00000028 00000018 00000000 00000002 00000001 00000000 00000000 00000000
+  UVD_POWER_STATUS         [0x07e02] = 0x00000105
+  UVD_STATUS               [0x07f43] = 0xdeadbeef
+  UVD_DPG_PAUSE            [0x07e14] = 0x00000000
+  VCN_RB_ENABLE            [0x07e85] = 0x000001ff
+  UVD_RB_BASE_LO           [0x07eea] = 0x0c100000
+  UVD_RB_BASE_HI           [0x07eeb] = 0x00000080
+  UVD_RB_SIZE              [0x07eec] = 0x00001000
+  UVD_RB_RPTR              [0x07eac] = 0x000000c0
+  UVD_RB_WPTR              [0x07ead] = 0x000000c0
+  VCN_RB1_DB_CTRL          [0x07e72] = 0x40000008
+  UVD_VCPU_CNTL            [0x07f96] = 0xffffffff
+  UVD_MASTINT_EN           [0x07ee1] = 0xdeadbeef
+  UVD_LMI_CTRL             [0x080b0] = 0xdeadbeef
+  UVD_GFX10_ADDR_CONFIG    [0x07e42] = 0x00000242
+  ✅ ibtest 通過：VCN 執行了 decode IB 並寫回 fence
+== vmtest（MMHUB context 1 + VCN 用 vmid 1 的虛擬位址）
+  FB 實體位址 0x7a0000000  系統頁 0x25e8de000  PT +0xc180000  VA 0x4000000000
+  備份：L1_TLB_CNTL=0x501 L2_CNTL=0x80602 L2_CNTL3=0x80100007 L2_CNTL4=0xc1 L2_CNTL5=0x3fe0 PROT_FAULT_CNTL2=0xa0000 PROT_FAULT_DEF_LO=0x0 PROT_FAULT_DEF_HI=0x0 SYS_APER_DEF_LSB=0x0 SYS_APER_DEF_MSB=0x0 INV_ENG17_RANGE_LO=0x0 INV_ENG17_RANGE_HI=0x0 CTX1_CNTL=0x1fffe00 CTX1_PT_BASE_LO=0x0 CTX1_PT_BASE_HI=0x0 CTX1_START_LO=0x0 CTX1_START_HI=0x0 CTX1_END_LO=0x0 CTX1_END_HI=0x0
+  PROT_FAULT_STATUS 0x00000000  ADDR 0x0000000000000000
+  上次的 scratch 頁（驗證 fence 是否被導到預設頁） +0xc1f0000:
+    00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+-- MMHUB 全域設定
+  wreg SYS_APER_DEFAULT_LSB       [0x1a8d8] = 0x007ac1f0  readback 0x007ac1f0
+  wreg SYS_APER_DEFAULT_MSB       [0x1a8d9] = 0x00000000  readback 0x00000000
+  wreg PROT_FAULT_DEFAULT_LO      [0x1a70f] = 0x007ac1f0  readback 0x007ac1f0
+  wreg PROT_FAULT_DEFAULT_HI      [0x1a710] = 0x00000000  readback 0x00000000
+  wreg PROT_FAULT_CNTL2           [0x1a709] = 0x000e0000  readback 0x000e0000
+  wreg MX_L1_TLB_CNTL             [0x1a8f3] = 0x00001859  readback 0x00001859
+  wreg L2_CNTL                    [0x1a700] = 0x00080e01  readback 0x00080e01
+  wreg L2_CNTL2 (invalidate)      [0x1a701] = 0x00000003  readback 0x00000003
+  wreg L2_CNTL3                   [0x1a702] = 0x80130009  readback 0x80130009
+  wreg L2_CNTL4                   [0x1a718] = 0x00000001  readback 0x00000001
+  wreg L2_CNTL5                   [0x1a71e] = 0x00003fe0  readback 0x00003fe0
+  wreg INV_ENG17_RANGE_LO         [0x1a7a9] = 0xffffffff  readback 0xffffffff
+  wreg INV_ENG17_RANGE_HI         [0x1a7aa] = 0x0000001f  readback 0x0000001f
+-- MMHUB context 1（depth 0）
+  wreg CTX1_PT_BASE_LO            [0x1a7ad] = 0xac180001  readback 0xac180001
+  wreg CTX1_PT_BASE_HI            [0x1a7ae] = 0x00000007  readback 0x00000007
+  wreg CTX1_START_LO              [0x1a7cd] = 0x04000000  readback 0x04000000
+  wreg CTX1_START_HI              [0x1a7ce] = 0x00000000  readback 0x00000000
+  wreg CTX1_END_LO                [0x1a7ed] = 0x040001ff  readback 0x040001ff
+  wreg CTX1_END_HI                [0x1a7ee] = 0x00000000  readback 0x00000000
+  wreg CTX1_CNTL                  [0x1a741] = 0x01fffe01  readback 0x01fffe01
+  MMHUB invalidate eng17 vmid 1：ACK 0x2 OK
+  系統頁 IB 寫入確認：dword2 = 0x3002217e（應是 0x3002217e）
+-- job 1：vmid 1，IB VA 0x4000010000（VRAM），msg VA 0x4000020000，fence MC seq 0x11
+  wreg UVD_RB_WPTR                [0x07ead] = 0x00000100  readback 0x00000100
+  fence = 0x11（等 0x11，1 ms）RPTR 0xc0 -> 0x100  ✅
+  PROT_FAULT_STATUS 0x00000000  ADDR 0x0000000000000000
+-- job 2：vmid 1，IB VA 0x40001ff000（系統記憶體 0x25e8de000），fence MC seq 0x22
+  wreg UVD_RB_WPTR                [0x07ead] = 0x00000140  readback 0x00000140
+  fence = 0x22（等 0x22，1 ms）RPTR 0x100 -> 0x140  ✅
+  PROT_FAULT_STATUS 0x00000000  ADDR 0x0000000000000000
+-- job 3（對照組）：vmid 1，IB 在範圍外 VA 0x4010000000，fence MC seq 0x33
+  wreg UVD_RB_WPTR                [0x07ead] = 0x00000180  readback 0x00000180
+  fence = 0x22（等 0x33，2000 ms）RPTR 0x140 -> 0x140  ✗ 逾時
+  PROT_FAULT_STATUS 0x00103933  ADDR 0x0000000004010000
+  對照組：PROT_FAULT_STATUS 0x0 -> 0x103933  有記錄 fault → 轉換路徑確實在作用
+-- 還原 MMHUB
+  全部還原
+  ✅ vmtest 通過：VCN 透過 MMHUB page table（vmid 1）從 VRAM 和系統記憶體讀 IB
+== down（vcn_v4_0_stop_dpg_mode 簡化版 + PowerDownVcn）
+  UVD_POWER_STATUS 0x00000106（等 =1：逾時，照樣繼續）
+  wreg VCN_RB_ENABLE (RB1 off)    [0x07e85] = 0x000001fb  readback 0x000001fb
+  wreg UVD_POWER_STATUS (PG_MODE off) [0x07e02] = 0x00000102  readback 0x00000102
+  smu PowerDownVcn   msg 0x06 arg 0x00000000 -> resp 0x01 (OK)  out 0x00000000  1 ms
+watchdog 已取消
+== 結果：up=0 ringtest=0 ibtest=0 vmtest=0（0 = 成功）  WindowServer：在跑
+紀錄存在 /Users/kaoru/fw13-hackintosh/vcn/log-1122-130919.txt
