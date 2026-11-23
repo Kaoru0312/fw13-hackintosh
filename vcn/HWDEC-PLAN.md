@@ -40,3 +40,15 @@ H.264 硬解只對「真的送 H.264 給 VideoToolbox」的播放有用。YouTub
 每一步都要在 Mac 上編譯、上機測，第 1 步要換 ESP 上的 PhxBringup（跟 GFXOFF 階段 2 一樣的風險和還原方式）。
 
 另一個選項：向 mechrevo 作者詢問 build 75 的原始碼會不會公開（他們的 repo 是 MIT＋第三方授權）。這要使用者自己決定要不要開 issue。
+
+## 2026-11-24 決定與第一步
+
+- YouTube 在 Safari（FW13）用的是 **`avc1.640028`**（H.264 High profile、level 4.0），所以 H.264 路線對 Safari 的 YouTube 有用。
+- 第一步不改 kext：在 FW13 自己的 `vcn/vcnctl.c` 加 `decodetest`，用使用者空間（PhxBringup 的除錯介面，跟階段 1–2 一樣）
+  解一張固定的 H.264 畫面（libdrm 的 864×480 IDR 測試向量，`vcn/vcn_dec_vector.h`）。輸出 NV12 加總要等於 0x020345d8。
+  這一步過了，就證明 FW13 的 VCN 解碼路徑（session、DPB、bitstream、target、feedback 這些 buffer 的格式）是對的，
+  接下來才值得寫 H.264 parser（第 2 步）去餵真的影片。
+- VRAM 用 +0x0D000000 起約 16 MiB（0xD000000–0xE008000，mechrevo 的 kext 也用這段）。寫入前先把整段讀兩次（間隔 3 秒）比雜湊，
+  有變就停止、什麼都不寫。這段 FW13 上有沒有別的用途：不知道，靠這個檢查把關。
+- 執行：`sudo bash /Users/kaoru/fw13-hackintosh/vcn/vcn-test.sh --dec`（check → 4 分鐘自動重開 watchdog → up → ringtest → ibtest → decodetest → down）。
+  只在 Linux 用假的 Apple 標頭做過語法檢查，沒在 Mac 上編譯過。

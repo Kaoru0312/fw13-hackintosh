@@ -54,3 +54,6 @@ vcn/fw/
 vcn/ref/
 vcn/vcnctl
 vcn/phase3/vtprobe
+
+# VCN 解碼測試輸出的原始畫面
+vcn/*.nv12
