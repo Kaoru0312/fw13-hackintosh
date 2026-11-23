@@ -44,6 +44,11 @@ FW13 在 11-21 只送了 0x19，這兩個條件都沒有。
 **階段 0 結果（2026-11-24）**：`0xF89A = 0x08084001`（HALT = 1）、`0x127C = 0x00002440`（缺 bit 28）、`0x1285 = 0x46dee557`（bit 11 CGCG_FENCE = 0）、
 `0x12BC = 0x00400002`、`0xEE6B = 0x00140016`、`0xEC43 = 0`。跟上游修正前的狀態**完全一樣**（`RLC_GPM_STAT` 連數值都相同）。→ 進階段 1a，腳本 `gpu/sdma-test.sh`。
 
+**階段 1a 結果（2026-11-24 05:23–05:25，開機 19 分鐘，`gpu/sdma-1124-052351.txt`）**：寫入後 `SDMA0_F32_CNTL = 0x08084000`、`SDMA0_CNTL = 0x10002440`、
+CGCG_FENCE = 1、**`RLC_GPM_STAT = 0x000c001a`（= Linux 的值）**，90 秒內一直維持；mtlprobe 9 次都正常，WindowServer 正常。→ RLC 的 CGCG 握手在執行期解除 halt 也能完成。
+功耗（雜訊大）：基準（去掉前 2 筆）中位數 8.15 W；解除後、mtlprobe 跑完 5 秒的取樣中位數 7.45 W（7.35–8.62，分成 7.3–7.4 和 8.0–8.6 兩群）；
+緊接在 mtlprobe 之後的中位數 8.27 W。每 10 秒一次的 mtlprobe 會叫醒 GPU，這組數字不夠乾淨，要用 `power/idle-measure.sh`（不跑 mtlprobe）再量一次。
+
 ### 階段 1：SDMA 解除 halt（只要 3 個暫存器寫入）
 
 上游在 mesboot 裡做，時機是 MES 初始化之前。兩種做法：
