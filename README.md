@@ -3,6 +3,7 @@
 Framework 13 AMD（Ryzen 5 7640U／Radeon 760M）的 macOS Tahoe 和 CachyOS 雙系統工作記錄。
 
 - **從這裡開始讀：[HANDOFF.md](HANDOFF.md)**：目前狀態、設定、救援指令、量測結果和下一步。
+- 其他 Phoenix 黑蘋果專案的可用之處：[REFERENCES-1123.md](REFERENCES-1123.md)。
 - 各資料夾放的是安裝／還原腳本和自製 kext 原始碼。
 - 這個 repo 刻意**不放**以下東西：含 SMBIOS 序號的 config.plist、第三方 SDK／原始碼、二進位檔，詳見 `.gitignore`。
 - 授權：自己寫的部分是 Apache-2.0，部分資料夾例外（含僅限非商業使用的 `phxaccel-port/`），詳見 [LICENSING.md](LICENSING.md)。

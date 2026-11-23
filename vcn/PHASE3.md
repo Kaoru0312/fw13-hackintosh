@@ -25,6 +25,9 @@
 | B. MediaExtension 解碼器（macOS 15+ `MEVideoDecoder`） | 寫一個 App Extension 解碼器，內部呼叫 VCN | 只有 app 主動呼叫 `VTRegisterProfessionalVideoWorkflowVideoDecoders` 才會載入，Safari/桌布不會；設計上是給系統不支援的 codec 用，蓋不掉內建 H.264/HEVC；extension 在沙盒裡，不能開任意 kext user client。**不可行。** |
 | C. 注入 / 掛鉤 VideoToolbox | 用 dyld 注入或 Lilu 類的使用者空間 patch 換掉 VCP 解碼器 | Safari 的 WebContent / GPU 行程是 hardened runtime + library validation，要關 SIP/AMFI 才行，等於降低整台安全性，而且每次系統更新都會壞。**不建議。** |
 | D. 第三方 `/Library/Video/Plug-Ins` 解碼器 | 舊式 VT decoder 外掛 | 同 B，只在專業工作流程註冊時載入，內建 codec 優先。**不可行。** |
+
+> **更正（2026-11-23）**：路線 D 的判斷前提有誤。ryzenstatus-utils `GPU/docs/how-it-works.md` 寫 VideoToolbox 讀 `/System/Library/Video/Plug-Ins` 的解碼器不檢查簽章（`/Library/Video/Plug-Ins` 才要求 Apple 簽章），他們的 AV1/VP9 解碼器在 Safari、Chrome 裡被載入（RX 6800 XT、Tahoe 26.7.3；FW13 26.6 沒驗證；要 `csrutil authenticated-root disable`）。詳見 `REFERENCES-1123.md` 第 4 項。
+
 | E. 只做 Vulkan（階段 2c） | mpv `--hwdec=vulkan` / ffmpeg 用 nullarc 的 RADV | 不碰 VideoToolbox，只對自己用 mpv 播本機檔案有用。仍是唯一「中等成本」的選項。 |
 
 ## 4. 對動態桌布的意義

@@ -18,6 +18,11 @@
 - 每個修改 OpenCore 的動作：先備份 → 在副本上模擬 → 給 diff → 給 CachyOS 還原指令。
 - 工作檔案都在 `~/fw13-hackintosh/`（本文件所在資料夾）；config 備份在 `~/EFI-backup/`。
 
+## 0c. 參考專案盤點（2026-11-23）
+- 5 個參考 repo（mechrevo-f7bsc、ryzenstatus-utils、gem12、660m-Metal、780m-hackintosh）和 nullarc 上游 PR #14/#20/#24/#25 的可用之處整理在 [REFERENCES-1123.md](REFERENCES-1123.md)。
+- 最優先：GPU 閒置功耗。FW13 的 `nullarc-port/mesboot.c` 沒設 `CP_MEC_DOORBELL_RANGE`、oversubscription timer 是 50，跟上游 B-34（CP 一直 busy，修正後閒置封裝 22–36 W → 5.2 W）一樣。補丁 `nullarc-port/patches/mesboot-idle-pr14.patch` 已備好，**沒編譯、沒上機**；先唯讀讀 `GRBM_STATUS`（`phxctl regs 0x2004`）確認是不是 `0xa800302c`。
+- `vcn/PHASE3.md` 的路線 D「不可行」要更正：ryzenstatus-utils 的文件寫 `/System/Library/Video/Plug-Ins` 的解碼器不檢查簽章（FW13 沒驗證）。
+
 ## 0a. 最新狀態速覽（2026-11-21 22:50）
 - **功耗（閒置封裝，接著充電器，Power Gadget 關、Claude 縮到 Dock）**：GPU 接管開啟 **約 11 W**（下午是 14 W；原本 33 W）。GPU 接管關閉（CPU 繪製）約 6.8 W。CachyOS 約 5.5 W（插電）；用電池時整機約 9.2 W、封裝約 6.4 W（2026-11-22，Discord 開著）。
   - 33 → 14 W：phxboot 開機時送 SMU 指令，GFX 限 800、FCLK 限 1400 MHz（§9b「開機自動套用」；停用：建立 `/Users/Shared/gpu/phxboot-noclk`）。
