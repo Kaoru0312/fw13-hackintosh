@@ -22,6 +22,7 @@
 - 5 個參考 repo（mechrevo-f7bsc、ryzenstatus-utils、gem12、660m-Metal、780m-hackintosh）和 nullarc 上游 PR #14/#20/#24/#25 的可用之處整理在 [REFERENCES-1123.md](REFERENCES-1123.md)。
 - **2026-11-24 實測**：`GRBM_STATUS` = `0x0000302c`（CP 閒置）→ FW13 **沒有**上游 B-34 的 CP busy 問題，`nullarc-port/patches/mesboot-idle-pr14.patch` 不用裝。
 - 同時讀到 GFX 時鐘閘控整個沒開（`0xEC48 = 0x000607ff`、`0xEC49/0xECC5 = 0x0001003c`）。上游開閘控量到閒置約省 1.5–2 W（nullarc `9f37791`）。下一個實驗：`sudo bash /Users/kaoru/fw13-hackintosh/gpu/gpucg-test.sh`（失敗自動寫回；手動還原 `--restore`；重開機也會恢復）。
+- **閘控實驗（2026-11-24 04:53）**：開啟後 GPU 正常，閒置封裝 **9.95 → 7.91 W（約 −2 W）**（`gpu/gpucg-1124-045239.txt`）。目前只在執行期開著，重開機就沒了；長時間穩定性待觀察，之後再決定要不要加進 phxboot 開機自動套用。
 - `vcn/PHASE3.md` 的路線 D「不可行」要更正：ryzenstatus-utils 的文件寫 `/System/Library/Video/Plug-Ins` 的解碼器不檢查簽章（FW13 沒驗證）。
 
 ## 0a. 最新狀態速覽（2026-11-21 22:50）
