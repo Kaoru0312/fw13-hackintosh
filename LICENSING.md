@@ -11,7 +11,7 @@ Each part keeps its own license. When a file carries its own license header, tha
 | `nullarc-pkg/` | Several licenses, see [`nullarc-pkg/LICENSE`](nullarc-pkg/LICENSE) and [`nullarc-pkg/THIRD_PARTY_NOTICES.md`](nullarc-pkg/THIRD_PARTY_NOTICES.md) | nullarc (<https://github.com/luuumi-dev/nullarc>) with local changes |
 | `nullarc-kext/`, `nullarc-port/mesboot.c`, `nullarc-port/patches/`, `tools/collect-760m.c` | MIT ([`nullarc-pkg/LICENSES/MIT.txt`](nullarc-pkg/LICENSES/MIT.txt)), or at your option GPL-2.0-only ([`nullarc-pkg/LICENSES/GPL-2.0-only.txt`](nullarc-pkg/LICENSES/GPL-2.0-only.txt)), as nullarc | © 2026 luuumi-dev and the nullarc contributors, with local changes |
 | `nullarc-port/csb_gfx11.h`, `nullarc-port/mes_v11_api_def.h` | MIT-style license, notice at the top of each file | © Advanced Micro Devices, Inc. (from Linux `amdgpu`) |
-| `gpu/gpucg-test.sh` 的暫存器寫入序列 | MIT，同 mechrevo-f7bsc `macos/thermal/gpucg.sh` | © WUJIE15XA-Hackintosh contributors（QiRanChenk/MECHREVO-WUJIE15XA-8745HS-Hackintosh）；其餘部分同本 repo |
+| `gpu/gpucg-test.sh`、`gpu/gpucg.sh` 的暫存器寫入序列 | MIT，同 mechrevo-f7bsc `macos/thermal/gpucg.sh` | © WUJIE15XA-Hackintosh contributors（QiRanChenk/MECHREVO-WUJIE15XA-8745HS-Hackintosh）；其餘部分同本 repo |
 | `i2c/patches/`, `i2c/VoodooI2CHID-Info.plist.orig` | GPL-3.0, as VoodooI2C | Patches against / files from VoodooI2C (<https://github.com/VoodooI2C/VoodooI2C>) |
 
 ## PolyForm Noncommercial: Required Notice
