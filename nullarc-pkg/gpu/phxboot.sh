@@ -111,6 +111,11 @@ fi
 if [ ! -e $G/gpucg-off ] && [ -x $G/gpucg.sh ]; then
     echo "[port] gpucg: $($G/gpucg.sh on 2>&1)"
 fi
+# [port] fw13: take SDMA0 out of halt so the RLC can finish coarse grain clock gating (nullarc PR #24); RLC_GPM_STAT
+# 0x00140016 -> 0x000c001a, idle package 8.03 -> 7.27 W (2026-11-24). Only with clock gating on. Kill switch: $G/sdma-off.
+if [ ! -e $G/sdma-off ] && [ -x $G/sdma.sh ] && [ "$($G/phxctl/phxctl regs 0xEC48 | awk '{print $2}')" = 0x00060041 ]; then
+    echo "[port] sdma: $($G/sdma.sh on 2>&1)"
+fi
 rm -f "$MARK"; sync
 echo "done $(date '+%T')"
 
