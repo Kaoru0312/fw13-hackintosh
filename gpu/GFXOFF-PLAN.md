@@ -41,6 +41,9 @@ FW13 在 11-21 只送了 0x19，這兩個條件都沒有。
 段 0 / 段 1 基底取自 nullarc PhxBringup 的註解「GC 11.0.1 registers (segment 0 base 0x1260, segment 1 base 0xa000)」，FW13 的 `mesboot.c`
 `sched_test()` 的 `gcb[]` 也是 `{0x1260, 0xA000, …}`。gpucg 用的 0xEC48（= 0xA000 + 0x4c48）就是這樣算的，已經在 FW13 上驗證過。
 
+**階段 0 結果（2026-11-24）**：`0xF89A = 0x08084001`（HALT = 1）、`0x127C = 0x00002440`（缺 bit 28）、`0x1285 = 0x46dee557`（bit 11 CGCG_FENCE = 0）、
+`0x12BC = 0x00400002`、`0xEE6B = 0x00140016`、`0xEC43 = 0`。跟上游修正前的狀態**完全一樣**（`RLC_GPM_STAT` 連數值都相同）。→ 進階段 1a，腳本 `gpu/sdma-test.sh`。
+
 ### 階段 1：SDMA 解除 halt（只要 3 個暫存器寫入）
 
 上游在 mesboot 裡做，時機是 MES 初始化之前。兩種做法：
