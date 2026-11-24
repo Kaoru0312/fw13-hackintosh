@@ -181,3 +181,12 @@
   已改成 on 時 `pmset -a sleep 0`、off 時還原。這次的「變黑、半亮」是閒置睡眠一直被觸發又被擋。
 - 下一步：SSDT-S3（只在 Darwin、`\_S3` 不存在時定義），數值照 DSDT 條件式裡的 `_S3`。需要 `acpi/tables-linux/DSDT.dsl`（在 Mac 上，gitignore）。
 - `hib-test.sh off` 已跑（04:3x）：disablesleep 1、boot-args 的 `-v`、`debug=0x100` 回來（重開後生效）。
+
+## 第 3b 步：SSDT-S3（`acpi/SSDT-S3.dsl`、`acpi/s3.sh`）
+
+- DSDT（`acpi/tables-linux/DSDT.dsl`，在 Mac 上）第 860–871 行：`If ((CNSB == Zero)) { If ((DAS3 == One)) { Name (_S3, Package (0x04) { 0x03, 0x03, Zero, Zero }) } }`；
+  `CNSB`、`DAS3` 在第 356、358 行（8-bit 欄位）。`_S4`（0x04, 0x04）無條件存在。
+- 660m-Metal 的 `dist/acpi/SSDT-S3.dsl` 處理的是一模一樣的條件式（作者記錄：沒有它時 "every sleep attempt ends in kPMPCIUnsupported"，加上後 S3 有進入）。
+  照它寫 FW13 版：Darwin 下 `If (LNot (CondRefOf (\_S3)))` 才建立 `\_S3 = {3, 3, 0, 0}`；`\_SB.FWS3` 的 `_STA` 露出 DAS3／CNSB。
+  這裡用 iasl 20230628 `-vx 6142` 編過：0 error、172 bytes。
+- 加在 ACPI.Add 最後；備份 `config.plist.bak-s3`。
