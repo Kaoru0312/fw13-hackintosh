@@ -27,6 +27,9 @@
 - **已安裝（2026-11-24 05:0x）**：重開機後 `/var/log/phxboot.log` 有 `[port] gpucg: 0xEC48=0x00060041 0xEC49=0x0000363f …`、`done 05:06:19`，暫存器值跟實驗時一樣。螢幕關閉→喚醒已測過正常（執行期開著時）；闔上螢幕再打開正常（2026-11-24，開機自動套用後）；長時間使用還沒驗證。
 - **閒置功耗重量（2026-11-24 05:11–05:17，`power/idle-measure.sh`，結果檔 `power/idle-1124-051107.txt` 在使用者 Mac 上）**：插電、電池 100%、開機 7 分鐘、GPU 接管＋閘控開、GFXCLK 800 MHz。暖機後 60 筆：**平均 8.17 W、中位數 8.03 W**、最小 7.94 W、最大 9.65 W；C0 約 147‰；TC0P 47 → 44°C。有兩段約 15 秒的 9.5 W 突波（05:13:55–05:14:05、05:15:01–05:15:06），使用者說明是量測中途手動打開終端機視窗造成的，不是背景程序。對照：11-21/22 插電閒置約 10.3–11 W、gpucg 實驗基準 9.95 W → 閘控後穩定約 8.0 W；CachyOS 插電約 5.5 W，還差約 2.5 W。
 - GFXOFF 移植研究：`gpu/GFXOFF-PLAN.md`（階段 0 只讀 → 階段 1 SDMA 解除 halt → 階段 2 重編 PhxBringup，基底要用 v0.4.0-alpha 標籤而不是 repo 裡 b787e24 的原始碼）。
+- **ESP 上的 PhxBringup 換成 FW13 版 build 134（2026-11-24 19:39，重開機後生效）**：原始碼 v0.4.0-alpha ＋ 補丁 01（拓撲表）＋ 02（VCN 解碼介面 selector 130），sha256 `a16c7684…`（78032 bytes）；原本的是 `6c947da7…`（release ＋ topology-patch.py）。備份：ESP `EFI/OC/PhxBringup.kext.bak-fw13-1124-193908`、`~/EFI-backup/PhxBringup.kext.bak-fw13-1124-193908`。
+  - **CachyOS 還原**：`sudo cp /boot/EFI/OC/PhxBringup.kext.bak-fw13-1124-193908/Contents/MacOS/PhxBringup /boot/EFI/OC/Kexts/PhxBringup.kext/Contents/MacOS/PhxBringup`
+  - 這次重開機也是 SDMA 開機自動套用第一次生效（兩個改動同時），出問題時先分開：`sudo touch /Users/Shared/gpu/sdma-off` 只關 SDMA。
 - 硬解重新評估：`vcn/HWDEC-PLAN.md`（mechrevo 公開的 VCN patch 只到 build 67，解碼只有固定測試向量；build 75 的任意 H.264 解碼沒公開。先確認 YouTube 在 Safari 用哪個 codec）。
 - **硬解第 1 步通過（2026-11-24 12:49）**：`vcnctl decodetest` 從使用者空間解出 libdrm 的 864×480 H.264 畫面，NV12 總和 0x020345d8 正確（`vcn/log-1124-124918.txt`）。YouTube／Safari 用 `avc1.640028`。下一步：自己組 decode message（見 HWDEC-PLAN.md）。
 - **硬解第 2 步通過（2026-11-24 13:11）**：自己的 H.264 parser＋message 產生器解出 mechrevo 的 160×128 四象限測試檔（Y 48／200、UV 128 正確），libdrm 畫面用自己的 message 也解對。下一步：P／B 畫面（DPB 管理）。
