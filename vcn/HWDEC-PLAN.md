@@ -64,3 +64,17 @@ H.264 硬解只對「真的送 H.264 給 VideoToolbox」的播放有用。YouTub
 下一步（第 2 步）：自己組 decode message。從 libdrm 向量的 message（236 bytes）+ parameters（3344 bytes）對照 Mesa
 `radeon_vcn_dec.h` 的 `rvcn_dec_message_*` 結構，寫出「H.264 SPS／PPS／slice header → message」的產生器；先讓它對 libdrm 那張畫面產生
 **跟向量逐 byte 相同**的 message（不用上機就能驗證），再拿 mechrevo 的 `vcn_quadrants.h264`（160×128）等單張 IDR 上機解碼。
+
+## 第 2 步進度（2026-11-24）
+
+- `vcn/h264/h264_parse.[ch]`：Annex B、SPS（含 scaling list fall-back）、PPS、slice header（含 ref list modification、pred weight table、
+  dec_ref_pic_marking／MMCO）。mechrevo 三支測試檔（160×128、2048×1152、2560×1440，High profile、CABAC、8x8 transform）都解析成功，
+  slice 的 first_mb 連續（例：2048×1152 共 8 個 slice，每個 1152 MB）。
+- `vcn/h264/vcn_h264_msg.[ch]`：照 Mesa TIER0 組 create／decode message。用 libdrm 那張畫面的參數組出的 avc 結構，
+  **前 1116 bytes 跟 libdrm 向量逐 byte 相同**、IT scaling buffer 也相同（`vcn/h264/test_h264.c`，主機端可跑）。
+  跟向量不同的地方：decode 結構 Mesa 現行版是 188 bytes（向量是舊版 180），所以 avc 在 0xf4（向量 0xec）；
+  decode 欄位改用 Mesa 的值（dpb／ctx 大小、db_pitch、array mode 3、mif_wrc_en 1，field mode 0）。這些差異對不對要上機才知道。
+- `vcnctl decodetest --ourmsg`：同一段 libdrm bitstream、同一個 session，只把 decode message 換成自己產生的 → 總和還是 0x020345d8 就代表
+  message 格式可用（A/B 對照）。
+- `vcnctl decodefile --in <檔>`：解檔案的第一張 IDR。vcn_quadrants.h264 的預期：四象限 Y 約 48／200、UV 約 128（mechrevo vcn/README.md）。
+- 還沒做：P／B 畫面需要的 POC 計算與 DPB 管理（sliding window、MMCO）。

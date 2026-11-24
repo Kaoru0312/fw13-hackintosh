@@ -755,6 +755,8 @@ static int cmd_ibtest(int trap)
    判定：輸出 NV12 全部 737280 bytes 加總要等於 0x020345d8（同該 patch 的 kDecodeOutputByteSum）。
    vmid 0、全部 MC 位址，不經 page table、不動 kext。 */
 #include "vcn_dec_vector.h"
+#include "h264/h264_parse.h"
+#include "h264/vcn_h264_msg.h"
 #define DEC_OFF 0x0D000000u
 #define DEC_SESSION_BYTES (128u * 1024u)
 #define DEC_DPB_BYTES 15923584u
@@ -844,9 +846,9 @@ static int dec_session_msg(int close)
                 : vram_write_block(DEC_OFF + DEC_MSG, create, sizeof create);
 }
 
-static int cmd_decodetest(const char *outpath)
+static int cmd_decodetest(const char *outpath, int ourmsg)
 {
-   printf("== decodetest（libdrm H.264 864×480 IDR，期望 NV12 位元組總和 0x%08x）\n", DEC_SUM);
+   printf("== decodetest（libdrm H.264 864×480 IDR，期望 NV12 位元組總和 0x%08x）%s\n", DEC_SUM, ourmsg ? "  message：自己產生" : "");
    printf("  VRAM +0x%x 起 %u bytes：session +0、msg +0x%x、feedback +0x%x、scaling +0x%x、bitstream +0x%x、DPB +0x%x、context +0x%x、target +0x%x\n",
           DEC_OFF, DEC_REQUIRED, DEC_MSG, DEC_FEEDBACK, DEC_SCALING, DEC_BITSTREAM, DEC_DPB, DEC_CONTEXT, DEC_TARGET);
    uint32_t rp = rreg(R(regUVD_RB_RPTR)), wp = rreg(R(regUVD_RB_WPTR));
@@ -866,12 +868,32 @@ static int cmd_decodetest(const char *outpath)
    int bad = dec_session_msg(0) || dec_job(&wp, 0, 0x31, "job 1：建立 session");
    if (!bad) {
       if (vram_zero(DEC_OFF + DEC_MSG, 4096) ||
-          vram_write_block(DEC_OFF + DEC_MSG, kDecodeH264Message, sizeof kDecodeH264Message) ||
-          vram_write_block(DEC_OFF + DEC_MSG + sizeof kDecodeH264Message, kDecodeH264Parameters, sizeof kDecodeH264Parameters) ||
           vram_write_block(DEC_OFF + DEC_FEEDBACK, kDecodeH264Feedback, sizeof kDecodeH264Feedback) ||
-          vram_write_block(DEC_OFF + DEC_SCALING, kDecodeH264ScalingTable, sizeof kDecodeH264ScalingTable) ||
           vram_write_block(DEC_OFF + DEC_BITSTREAM, kDecodeH264Bitstream, sizeof kDecodeH264Bitstream))
          return 1;
+      if (ourmsg) {
+         /* 同一段 bitstream，但 decode message 改用我們自己的產生器（h264/vcn_h264_msg.c，Mesa TIER0 的欄位） */
+         h264_sps sps;
+         h264_pps pps;
+         h264_slice sl;
+         memset(&sl, 0, sizeof sl);
+         vcn_h264_libdrm_params(&sps, &pps);
+         vcn_h264_layout l;
+         vcn_h264_layout_init(&l, &sps);
+         vcn_h264_pic pic;
+         memset(&pic, 0, sizeof pic);
+         memset(pic.ref_idx, 0xff, sizeof pic.ref_idx);
+         static uint8_t msg[4096];
+         rvcn_dec_avc_its_t its;
+         uint32_t n = vcn_h264_decode_msg(msg, &its, DEC_HANDLE, &l, &sps, &pps, &sl, &pic, sizeof kDecodeH264Bitstream);
+         printf("  用自己的 message：%u bytes，dpb %u ctx %u dt %u db_pitch %u\n", n, l.dpb_size, l.hw_ctx_size, l.dt_size, l.db_pitch);
+         if (vram_write_block(DEC_OFF + DEC_MSG, msg, (n + 3) & ~3u) || vram_write_block(DEC_OFF + DEC_SCALING, &its, sizeof its))
+            return 1;
+      } else if (vram_write_block(DEC_OFF + DEC_MSG, kDecodeH264Message, sizeof kDecodeH264Message) ||
+                 vram_write_block(DEC_OFF + DEC_MSG + sizeof kDecodeH264Message, kDecodeH264Parameters, sizeof kDecodeH264Parameters) ||
+                 vram_write_block(DEC_OFF + DEC_SCALING, kDecodeH264ScalingTable, sizeof kDecodeH264ScalingTable)) {
+         return 1;
+      }
       bad = dec_job(&wp, 1, 0x32, "job 2：解碼一張畫面");
    }
    uint32_t sum = 0, nonzero = 0;
@@ -900,6 +922,209 @@ static int cmd_decodetest(const char *outpath)
    int ok = !bad && sum == DEC_SUM;
    printf("  %s\n", ok ? "✅ decodetest 通過：VCN 解出了正確的 H.264 畫面" : "✗ decodetest 失敗");
    return !ok;
+}
+
+/* ==== decodefile：解一個 H.264 檔的第一張畫面（目前只支援 IDR，沒有參考畫面） ====
+   SPS／PPS／slice header 由 h264/h264_parse.c 解析，decode message 由 h264/vcn_h264_msg.c 依 Mesa TIER0 產生。
+   VRAM 一樣從 +0x0D000000 開始，依影片尺寸配置；寫入前整段先確認 3 秒內沒變。 */
+static int cmd_decodefile(const char *path, const char *outpath)
+{
+   if (!path) {
+      printf("  !! 要給 --in <檔.h264>\n");
+      return 2;
+   }
+   size_t size = 0;
+   uint8_t *buf = read_file(path, &size);
+   if (!buf)
+      return 1;
+   static h264_params ps;
+   memset(&ps, 0, sizeof ps);
+   static uint8_t bs[4u << 20];
+   uint32_t bsd = 0;
+   h264_slice first;
+   int have = 0, nslices = 0;
+   size_t pos = 0, len;
+   const uint8_t *nal;
+   while ((nal = h264_next_nal(buf, size, &pos, &len))) {
+      int t = nal[0] & 31;
+      if (t == 7 && h264_parse_sps(&ps, nal, len)) { printf("  !! SPS 解析失敗\n"); return 1; }
+      if (t == 8 && h264_parse_pps(&ps, nal, len)) { printf("  !! PPS 解析失敗（FMO 等不支援）\n"); return 1; }
+      if (t == 1 || t == 5) {
+         h264_slice sl;
+         if (h264_parse_slice(&ps, nal, len, &sl)) { printf("  !! slice header 解析失敗\n"); return 1; }
+         if (have && sl.first_mb_in_slice == 0)
+            break;   /* 下一張畫面 */
+         if (!have) { first = sl; have = 1; }
+         if (bsd + 3 + len > sizeof bs) { printf("  !! bitstream 太大\n"); return 1; }
+         bs[bsd++] = 0; bs[bsd++] = 0; bs[bsd++] = 1;
+         memcpy(bs + bsd, nal, len);
+         bsd += (uint32_t)len;
+         nslices++;
+      }
+   }
+   if (!have) { printf("  !! 檔案裡沒有 slice\n"); return 1; }
+   if (first.nal_unit_type != 5) { printf("  !! 第一張不是 IDR（目前只支援 IDR）\n"); return 1; }
+   const h264_pps *pps = &ps.pps[first.pps_id];
+   const h264_sps *sps = &ps.sps[pps->sps_id];
+   vcn_h264_layout l;
+   vcn_h264_layout_init(&l, sps);
+   printf("== decodefile %s：%ux%u profile %u level %u，第一張 IDR %d 個 slice、%u bytes\n", path, l.width, l.height,
+          sps->profile_idc, sps->level_idc, nslices, bsd);
+
+   /* 配置（都 4 KiB 對齊）：session | msg | feedback | IT scaling | bitstream | DPB | context | target */
+#define A4K(x) (((x) + 4095u) & ~4095u)
+   const uint32_t o_msg = DEC_SESSION_BYTES, o_fb = o_msg + 4096, o_it = o_fb + 4096, o_bs = o_it + 4096;
+   const uint32_t o_dpb = A4K(o_bs + bsd + 256), o_ctx = A4K(o_dpb + l.dpb_size), o_dt = A4K(o_ctx + l.hw_ctx_size);
+   const uint32_t need = o_dt + l.dt_size;
+   printf("  VRAM +0x%x 起 %u bytes：bitstream +0x%x、DPB +0x%x（%u）、context +0x%x（%u）、target +0x%x（%u，行距 %u）\n", DEC_OFF,
+          need, o_bs, o_dpb, l.dpb_size, o_ctx, l.hw_ctx_size, o_dt, l.dt_size, l.dt_pitch);
+   if ((uint64_t)DEC_OFF + need > 0x10000000u) {
+      printf("  !! 超出 256 MiB BAR 視窗，停止\n");
+      return 1;
+   }
+   uint32_t rp = rreg(R(regUVD_RB_RPTR)), wp = rreg(R(regUVD_RB_WPTR));
+   if (rp != wp || !(rreg(R(regVCN_RB_ENABLE)) & VCN_RB_ENABLE__RB1_EN_MASK)) {
+      printf("  !! ring 沒準備好（要先 up）\n");
+      return 1;
+   }
+   /* 整段讀兩次比雜湊 */
+   {
+      uint64_t h[2] = {1469598103934665603ull, 1469598103934665603ull};
+      static uint32_t b[256];
+      for (int pass = 0; pass < 2; pass++) {
+         if (pass)
+            sleep(3);
+         for (uint32_t o = 0; o < need; o += sizeof b) {
+            uint32_t n = need - o < sizeof b ? (need - o + 3) / 4 : 256;
+            if (vram_read(DEC_OFF + o, b, n))
+               return 1;
+            for (uint32_t i = 0; i < n; i++)
+               h[pass] = (h[pass] ^ b[i]) * 1099511628211ull;
+         }
+      }
+      printf("  雜湊 %016llx / %016llx %s\n", (unsigned long long)h[0], (unsigned long long)h[1], h[0] == h[1] ? "沒變" : "✗ 有變");
+      if (h[0] != h[1]) {
+         printf("  !! 這段 VRAM 有別人在用，停止（沒有寫入）\n");
+         return 1;
+      }
+   }
+   double t0 = now_ms();
+   if (vram_zero(DEC_OFF, need))
+      return 1;
+   printf("  清 0 完成（%.1f 秒）\n", (now_ms() - t0) / 1000);
+
+   const uint64_t base = fb_mc_base + DEC_OFF;
+   const uint32_t handle = 0x46773133u;   /* "Fw13" */
+   uint32_t ib[DEC_IB_DW], w[14];
+   int bad = 0;
+   /* job 1：建立 session */
+   uint32_t n = vcn_h264_session_msg(w, 0, handle, &l);
+   bad = vram_write_block(DEC_OFF + o_msg, w, n * 4);
+   if (!bad) {
+      memset(ib, 0, sizeof ib);
+      ib[0] = 16; ib[1] = 0x30000002; ib[3] = DEC_IB_DW - 4; ib[4] = 16; ib[5] = 0x30000001; ib[6] = 3; ib[7] = (DEC_IB_DW - 4) * 4;
+      ib[8] = (DEC_IB_DW - 8) * 4; ib[9] = 1; ib[10] = 1 | 0x00100000;
+      dec_addr(ib + 11, base + o_msg);
+      dec_addr(ib + 17, base + 0);
+      for (uint32_t i = 4; i < DEC_IB_DW; i++) ib[2] += ib[i];
+      bad = vram_write_block(DEC_IB_OFF, ib, sizeof ib);
+      printf("-- job 1：建立 session（seq 0x41）\n");
+      uint32_t r0 = rreg(R(regUVD_RB_RPTR));
+      bad = bad || submit_job(&wp, fb_mc_base + DEC_IB_OFF, DEC_IB_DW, 0x41, 0) || wait_fence(0x41, r0);
+   }
+   /* job 2：解碼 */
+   if (!bad) {
+      vcn_h264_pic pic;
+      memset(&pic, 0, sizeof pic);
+      memset(pic.ref_idx, 0xff, sizeof pic.ref_idx);
+      pic.top_poc = (int32_t)first.pic_order_cnt_lsb;   /* IDR：PrevPicOrderCntMsb = 0（8.2.1.1） */
+      pic.bottom_poc = pic.top_poc + first.delta_pic_order_cnt_bottom;
+      static uint8_t msg[4096];
+      rvcn_dec_avc_its_t its;
+      uint32_t mb = vcn_h264_decode_msg(msg, &its, handle, &l, sps, pps, &first, &pic, bsd);
+      static const uint32_t fb_init[2] = {0x2c, 0x2c};   /* 同 libdrm 向量的 feedback 初值 */
+      bad = vram_zero(DEC_OFF + o_msg, 4096) || vram_write_block(DEC_OFF + o_msg, msg, (mb + 3) & ~3u) ||
+            vram_write_block(DEC_OFF + o_it, &its, sizeof its) || vram_write_block(DEC_OFF + o_fb, fb_init, sizeof fb_init) ||
+            vram_write_block(DEC_OFF + o_bs, bs, (bsd + 3) & ~3u);
+      if (!bad) {
+         memset(ib, 0, sizeof ib);
+         ib[0] = 16; ib[1] = 0x30000002; ib[3] = DEC_IB_DW - 4; ib[4] = 16; ib[5] = 0x30000001; ib[6] = 3; ib[7] = (DEC_IB_DW - 4) * 4;
+         ib[8] = (DEC_IB_DW - 8) * 4; ib[9] = 1; ib[10] = 1 | 0x00100000 | 0x00000a1e;
+         dec_addr(ib + 11, base + o_msg);
+         dec_addr(ib + 13, base + o_dpb);
+         dec_addr(ib + 15, base + o_dt);
+         dec_addr(ib + 17, base + 0);
+         dec_addr(ib + 19, base + o_bs);
+         dec_addr(ib + 21, base + o_ctx);
+         dec_addr(ib + 23, base + o_fb);
+         dec_addr(ib + 31, base + o_it);
+         for (uint32_t i = 4; i < DEC_IB_DW; i++) ib[2] += ib[i];
+         bad = vram_write_block(DEC_IB_OFF, ib, sizeof ib);
+         printf("-- job 2：解碼第一張畫面（seq 0x42，message %u bytes）\n", mb);
+         uint32_t r0 = rreg(R(regUVD_RB_RPTR));
+         bad = bad || submit_job(&wp, fb_mc_base + DEC_IB_OFF, DEC_IB_DW, 0x42, 0) || wait_fence(0x42, r0);
+      }
+   }
+   int ok = 0;
+   if (!bad) {
+      static uint8_t px[32u << 20];
+      if (l.dt_size > sizeof px)
+         return 1;
+      for (uint32_t o = 0; o < l.dt_size; o += 1024)
+         if (vram_read(DEC_OFF + o_dt + o, (uint32_t *)(px + o), l.dt_size - o >= 1024 ? 256 : (l.dt_size - o) / 4))
+            return 1;
+      dump_vram("feedback", DEC_OFF + o_fb, 11);
+      uint64_t sy = 0, suv = 0;
+      uint32_t nz = 0;
+      for (uint32_t y = 0; y < l.height; y++)
+         for (uint32_t x = 0; x < l.width; x++) {
+            sy += px[y * l.dt_pitch + x];
+            nz += px[y * l.dt_pitch + x] != 0;
+         }
+      const uint8_t *uv = px + l.dt_pitch * l.dt_height;
+      for (uint32_t y = 0; y < l.height / 2; y++)
+         for (uint32_t x = 0; x < l.width; x++)
+            suv += uv[y * l.dt_pitch + x];
+      printf("  Y 平均 %.1f（非 0 %u / %u）、UV 平均 %.1f\n", (double)sy / (l.width * l.height), nz, l.width * l.height,
+             (double)suv / (l.width * l.height / 2));
+      /* 四個象限的 Y 平均（vcn_quadrants.h264：160×128，Y = 48 / 200、UV = 128，mechrevo vcn/README.md） */
+      printf("  四象限 Y 平均：");
+      for (int qy = 0; qy < 2; qy++)
+         for (int qx = 0; qx < 2; qx++) {
+            uint64_t s2 = 0;
+            for (uint32_t y = qy * l.height / 2; y < (qy + 1) * l.height / 2; y++)
+               for (uint32_t x = qx * l.width / 2; x < (qx + 1) * l.width / 2; x++)
+                  s2 += px[y * l.dt_pitch + x];
+            printf("%.1f ", (double)s2 / (l.width * l.height / 4));
+         }
+      printf("\n");
+      ok = nz > 0;
+      FILE *f = outpath ? fopen(outpath, "wb") : NULL;
+      if (f) {
+         fwrite(px, 1, l.dt_size, f);
+         fclose(f);
+         printf("  畫面存到 %s（NV12：寬 %u、行距 %u、高 %u）\n", outpath, l.width, l.dt_pitch, l.dt_height);
+      }
+   }
+   /* job 3：關閉 session */
+   n = vcn_h264_session_msg(w, 1, handle, &l);
+   if (!vram_zero(DEC_OFF + o_msg, 4096) && !vram_write_block(DEC_OFF + o_msg, w, n * 4)) {
+      memset(ib, 0, sizeof ib);
+      ib[0] = 16; ib[1] = 0x30000002; ib[3] = DEC_IB_DW - 4; ib[4] = 16; ib[5] = 0x30000001; ib[6] = 3; ib[7] = (DEC_IB_DW - 4) * 4;
+      ib[8] = (DEC_IB_DW - 8) * 4; ib[9] = 1; ib[10] = 1 | 0x00100000;
+      dec_addr(ib + 11, base + o_msg);
+      dec_addr(ib + 17, base + 0);
+      for (uint32_t i = 4; i < DEC_IB_DW; i++) ib[2] += ib[i];
+      printf("-- job 3：關閉 session（seq 0x43）\n");
+      uint32_t r0 = rreg(R(regUVD_RB_RPTR));
+      if (!vram_write_block(DEC_IB_OFF, ib, sizeof ib) && !submit_job(&wp, fb_mc_base + DEC_IB_OFF, DEC_IB_DW, 0x43, 0))
+         bad |= wait_fence(0x43, r0);
+   }
+   dump_regs();
+   ok = ok && !bad;
+   printf("  %s\n", ok ? "✅ decodefile：VCN 完成解碼並有輸出（畫面對不對要看平均值／存檔）" : "✗ decodefile 失敗");
+   return !ok;
+#undef A4K
 }
 
 /* 只讀：MMHUB 3.0.1（seg1 0x1A000）的 VM 狀態。VCN 走 MMHUB、GFX 走 GCHUB；kext 只設了 GC 的 VMID 8..15。
@@ -1162,7 +1387,7 @@ int main(int argc, char **argv)
 {
    setvbuf(stdout, NULL, _IOLBF, 0);
    if (argc < 2) {
-      fprintf(stderr, "用法：vcnctl check | up [--no-drmkey] [--fw <vcn_4_0_2.bin>] | regs | ringtest | ibtest [--trap] | decodetest [--out <檔>] | vmtest [--keep] | mmhub | down\n");
+      fprintf(stderr, "用法：vcnctl check | up [--no-drmkey] [--fw <vcn_4_0_2.bin>] | regs | ringtest | ibtest [--trap] | decodetest [--ourmsg] [--out <檔>] | decodefile --in <檔.h264> [--out <檔>] | vmtest [--keep] | mmhub | down\n");
       return 2;
    }
    if (geteuid() != 0) {
@@ -1173,7 +1398,8 @@ int main(int argc, char **argv)
       return 1;
    const char *fw = "/Users/kaoru/fw13-hackintosh/vcn/fw/vcn_4_0_2.bin";
    int drmkey = 1, trap = 0, keep = 0;
-   const char *outpath = NULL;
+   const char *outpath = NULL, *infile = NULL;
+   int ourmsg = 0;
    for (int i = 2; i < argc; i++) {
       if (!strcmp(argv[i], "--no-drmkey"))
          drmkey = 0;
@@ -1185,6 +1411,10 @@ int main(int argc, char **argv)
          fw = argv[++i];
       else if (!strcmp(argv[i], "--out") && i + 1 < argc)
          outpath = argv[++i];
+      else if (!strcmp(argv[i], "--ourmsg"))
+         ourmsg = 1;
+      else if (!strcmp(argv[i], "--in") && i + 1 < argc)
+         infile = argv[++i];
    }
    if (!strcmp(argv[1], "check"))
       return cmd_check();
@@ -1202,8 +1432,10 @@ int main(int argc, char **argv)
       return cmd_mmhub();
    if (!strcmp(argv[1], "ibtest"))
       return cmd_ibtest(trap);
+   if (!strcmp(argv[1], "decodefile"))
+      return cmd_decodefile(infile, outpath);
    if (!strcmp(argv[1], "decodetest"))
-      return cmd_decodetest(outpath);
+      return cmd_decodetest(outpath, ourmsg);
    if (!strcmp(argv[1], "down"))
       return cmd_down();
    fprintf(stderr, "不認得的指令 %s\n", argv[1]);
