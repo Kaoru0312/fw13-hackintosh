@@ -132,3 +132,13 @@ ring 繞回（WPTR 0xfc0 → 0）也正常。→ H.264 frame 解碼（I／P／B�
 - `vcn/kdec.c`：一般使用者執行，解整個檔並跟 `.framemd5` 比對、印 VCN 時間與整體每張時間。`vcn/kdec-test.sh`：up → kdec t1–t4 → down。
 - 安裝：`gpu/phxbringup-fw13-build.sh`（全部補丁）→ `gpu/phxbringup-install.sh`（只換 ESP 上的二進位，備份 EFI/OC/PhxBringup.kext.bak-fw13-<時間>）。
 - 編譯：`clang -O2 -Wall -framework IOKit -framework CoreFoundation vcn/kdec.c vcn/h264/h264_parse.c vcn/h264/vcn_h264_msg.c vcn/h264/h264_dpb.c vcn/h264/h264_stream.c vcn/h264/md5.c -o vcn/kdec`
+
+### 第 4 步上機結果：build 134（2026-11-24 19:44，log `vcn/log-kdec-*.txt`）
+
+一般使用者執行 kdec、經 kext selector 130 解碼：**t1–t4 共 160 張 MD5 全部跟 ffmpeg 相同**。VCN 每張 0.51–1.17 ms，
+但整體每張：320×240 約 23–28 ms、**720p 208 ms（5 fps）**。瓶頸是 kext 經 BAR 逐 dword 讀回 NV12（720p 1.38 MB，約 7 MB/s），
+跟 PhxAMDFB 註解記錄的「經 BAR 複製一張 2560×1600 約 110 ms」同一個原因。
+
+build 135（補丁 02 更新）：輸出改從 carve-out 的系統記憶體位址讀（`IODeviceMemory::withRange(fbPhys + 位移)`，write-back 映射，
+同 PhxAMDFB aliasMap 的作法）；VCN 寫 DRAM 不經 CPU cache，所以讀之前對那段做 clflush（CPU 不寫那段，沒有 dirty line）。
+建立 session 時先用 BAR 寫記號、確認 alias 讀得到才採用，否則退回 BAR。kdec 會印「讀回路徑」。

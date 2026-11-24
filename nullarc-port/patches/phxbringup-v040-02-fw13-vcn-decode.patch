@@ -1,12 +1,12 @@
 diff -ruN a/src/phxbringup/PhxBringup.cpp b/src/phxbringup/PhxBringup.cpp
---- a/src/phxbringup/PhxBringup.cpp	2026-11-24 11:36:07.331867213 +0000
-+++ b/src/phxbringup/PhxBringup.cpp	2026-11-24 11:36:07.334102922 +0000
+--- a/src/phxbringup/PhxBringup.cpp	2026-11-24 11:47:00.196778691 +0000
++++ b/src/phxbringup/PhxBringup.cpp	2026-11-24 11:47:00.201666299 +0000
 @@ -24,7 +24,7 @@
  
  #include "PhxNativeABI.h"
  
 -#define PHX_KEXT_BUILD 34u
-+#define PHX_KEXT_BUILD 134u   // [fw13] 34 = v0.4.0；134 = FW13 版（拓撲表＋VCN 解碼介面）
++#define PHX_KEXT_BUILD 135u   // [fw13] 34 = v0.4.0；134 = FW13 版（拓撲表＋VCN 解碼介面）；135 = 輸出改從 carve-out 的系統記憶體位址讀
  
  // debug.phxbos_flush: how a client's BOs are made coherent around each submission and each completed wait.
  // 2 = clflush every line (the bring-up way), 1 = clflushopt (the same lines, pipelined), 0 = none (the GPU maps system
@@ -20,7 +20,7 @@ diff -ruN a/src/phxbringup/PhxBringup.cpp b/src/phxbringup/PhxBringup.cpp
      IOReturn setPowerState(unsigned long ordinal, IOService *whichDevice) override;
  
  private:
-@@ -129,6 +132,15 @@
+@@ -129,6 +132,17 @@
      void clearRing();
  
      const phx_topology *topology{nullptr};
@@ -29,6 +29,8 @@ diff -ruN a/src/phxbringup/PhxBringup.cpp b/src/phxbringup/PhxBringup.cpp
 +    void *fw13VcnOwner{nullptr};
 +    uint32_t fw13VcnHandle{0}, fw13VcnSeq{0x10000};
 +    uint32_t fw13VcnDpb{0}, fw13VcnCtx{0}, fw13VcnDt{0};
++    IOMemoryMap *fw13VcnAlias{nullptr};   // 輸出 target 的系統記憶體（carve-out）view，write-back；NULL = 只能走 BAR
++    void fw13VcnAliasDrop();
 +    bool fw13VcnRingOk() const;
 +    uint32_t fw13VcnSubmit(bool frame, uint32_t *usOut);
 +    void fw13VcnBarWrite(uint32_t off, const void *src, uint32_t bytes);
@@ -36,7 +38,7 @@ diff -ruN a/src/phxbringup/PhxBringup.cpp b/src/phxbringup/PhxBringup.cpp
      bool isSleeping{false};
      IOPCIDevice *pci{nullptr};
      IOMemoryMap *mmio{nullptr};
-@@ -245,6 +257,7 @@
+@@ -245,6 +259,7 @@
      IOReturn doQueryInfo(IOExternalMethodArguments *a);
      IOReturn doTopology(IOExternalMethodArguments *a);
      IOReturn doReadRegs(IOExternalMethodArguments *a);
@@ -44,7 +46,7 @@ diff -ruN a/src/phxbringup/PhxBringup.cpp b/src/phxbringup/PhxBringup.cpp
      IOReturn doBoCreate(IOExternalMethodArguments *a);
      IOReturn doBoFree(IOExternalMethodArguments *a);
      IOReturn doBoImportHost(IOExternalMethodArguments *a);
-@@ -342,6 +355,7 @@
+@@ -342,6 +357,7 @@
      doorbellMap = pci->mapDeviceMemoryWithRegister(kIOPCIConfigBaseAddress2);
      smuLock = IOLockAlloc();
      gpuLock = IOLockAlloc();
@@ -52,10 +54,11 @@ diff -ruN a/src/phxbringup/PhxBringup.cpp b/src/phxbringup/PhxBringup.cpp
      uint32_t dbg = 0;
      debug = PE_parse_boot_argn("phxdebug", &dbg, sizeof(dbg)) && dbg == 1;
      if (mmio) {
-@@ -406,6 +420,10 @@
+@@ -406,6 +422,11 @@
          IOLockFree(gpuLock);
          gpuLock = nullptr;
      }
++    fw13VcnAliasDrop();
 +    if (fw13VcnLock) {
 +        IOLockFree(fw13VcnLock);
 +        fw13VcnLock = nullptr;
@@ -63,7 +66,7 @@ diff -ruN a/src/phxbringup/PhxBringup.cpp b/src/phxbringup/PhxBringup.cpp
      if (doorbellMap) {
          doorbellMap->release();
          doorbellMap = nullptr;
-@@ -1376,6 +1394,8 @@
+@@ -1376,6 +1397,8 @@
          owner->releaseSession();
          sessionClaimed = false;
      }
@@ -72,7 +75,7 @@ diff -ruN a/src/phxbringup/PhxBringup.cpp b/src/phxbringup/PhxBringup.cpp
      terminate();
      return kIOReturnSuccess;
  }
-@@ -1461,6 +1481,7 @@
+@@ -1461,6 +1484,7 @@
          case PHXN_SEL_DBG_SYSMEM: r = doDbgSysMem(a); break;
          case PHXN_SEL_DBG_ADOPTQ: r = doDbgAdoptQueue(a); break;
          case PHXN_SEL_DBG_CLAIM: r = doDbgClaim(a); break;
@@ -80,7 +83,7 @@ diff -ruN a/src/phxbringup/PhxBringup.cpp b/src/phxbringup/PhxBringup.cpp
          default:                 r = kIOReturnBadArgument; break;
          }
      }
-@@ -2201,3 +2222,249 @@
+@@ -2201,3 +2225,301 @@
      a->scalarOutput[2] = em;
      return kIOReturnSuccess;
  }
@@ -101,6 +104,23 @@ diff -ruN a/src/phxbringup/PhxBringup.cpp b/src/phxbringup/PhxBringup.cpp
 +                          kFw13It = kFw13Fb + 4096, kFw13Bs = kFw13It + 4096, kFw13BsCap = 4u << 20,
 +                          kFw13Dpb = (kFw13Bs + kFw13BsCap + 4095u) & ~4095u;
 +static inline uint32_t fw13Align4k(uint32_t v) { return (v + 4095u) & ~4095u; }
++
++// clflush 一段（64-byte cache line），前後 mfence
++static void fw13Clflush(const volatile void *p, uint32_t n) {
++    uintptr_t a = reinterpret_cast<uintptr_t>(p) & ~static_cast<uintptr_t>(63);
++    const uintptr_t e = reinterpret_cast<uintptr_t>(p) + n;
++    __asm__ volatile("mfence" ::: "memory");
++    for (; a < e; a += 64)
++        __asm__ volatile("clflush (%0)" ::"r"(a) : "memory");
++    __asm__ volatile("mfence" ::: "memory");
++}
++
++void PhxBringup::fw13VcnAliasDrop() {
++    if (fw13VcnAlias) {
++        fw13VcnAlias->release();
++        fw13VcnAlias = nullptr;
++    }
++}
 +
 +bool PhxBringup::fw13VcnRingOk() const {
 +    if (!mmio || !fbAper || !fbMcBase || fbAperLen < kFw13DecLimit)
@@ -238,6 +258,30 @@ diff -ruN a/src/phxbringup/PhxBringup.cpp b/src/phxbringup/PhxBringup.cpp
 +            // 清 session、DPB、context（同 vcnctl：清整段）
 +            fw13VcnBarZero(kFw13DecOff, kFw13Bs);
 +            fw13VcnBarZero(kFw13DecOff + kFw13Dpb, fw13Align4k(kFw13Dpb + h.dpb_size) - kFw13Dpb + fw13Align4k(h.ctx_size));
++            // 輸出 target 透過 carve-out 的系統記憶體位址讀（PhxAMDFB 的 aliasMap 同樣作法：經 BAR 讀太慢，
++            // build 134 實測 720p 每張讀回約 200 ms）。先用 BAR 寫一個記號，確認 alias 讀得到同一個值才採用。
++            fw13VcnAliasDrop();
++            if (fbPhys) {
++                const uint32_t oDt = fw13Align4k(fw13Align4k(kFw13Dpb + h.dpb_size) + h.ctx_size);
++                if (IODeviceMemory *dm = IODeviceMemory::withRange(fbPhys + kFw13DecOff + oDt, fw13Align4k(h.dt_size))) {
++                    fw13VcnAlias = dm->map(kIOMapCopybackCache);
++                    dm->release();
++                }
++                if (fw13VcnAlias) {
++                    volatile uint32_t *bar = reinterpret_cast<volatile uint32_t *>(fbAper->getVirtualAddress() + kFw13DecOff + oDt);
++                    const volatile uint32_t *al = reinterpret_cast<const volatile uint32_t *>(fw13VcnAlias->getVirtualAddress());
++                    bar[0] = 0x46313344u;
++                    bar[h.dt_size / 4 - 1] = 0x44333146u;
++                    hdpFlush();
++                    (void)bar[0];
++                    fw13Clflush(al, h.dt_size);
++                    const bool same = al[0] == 0x46313344u && al[h.dt_size / 4 - 1] == 0x44333146u;
++                    bar[0] = 0;
++                    bar[h.dt_size / 4 - 1] = 0;
++                    if (!same)
++                        fw13VcnAliasDrop();
++                }
++            }
 +        } else {
 +            if (fw13VcnOwner != client) { st = PHXN_FW13_VCN_NO_SESSION; break; }
 +            if (h.dpb_size != fw13VcnDpb || h.ctx_size != fw13VcnCtx || h.dt_size != fw13VcnDt || h.handle != fw13VcnHandle) {
@@ -268,8 +312,10 @@ diff -ruN a/src/phxbringup/PhxBringup.cpp b/src/phxbringup/PhxBringup.cpp
 +            break;
 +        if (op == 1)
 +            fw13VcnOwner = client;
-+        if (op == 3)
++        if (op == 3) {
 +            fw13VcnOwner = nullptr;
++            fw13VcnAliasDrop();
++        }
 +        if (op == 2) {
 +            out[3] = reinterpret_cast<const volatile uint32_t *>(fbAper->getVirtualAddress() + kFw13DecOff + kFw13Fb)[3];
 +            if (outVa && outLen) {
@@ -277,14 +323,22 @@ diff -ruN a/src/phxbringup/PhxBringup.cpp b/src/phxbringup/PhxBringup.cpp
 +                const uint32_t n = outLen < fw13VcnDt ? static_cast<uint32_t>(outLen) : fw13VcnDt;
 +                IOMemoryDescriptor *outMd = IOMemoryDescriptor::withAddressRange(outVa, n, kIODirectionIn, task);
 +                if (outMd && outMd->prepare() == kIOReturnSuccess) {
-+                    const volatile uint8_t *pix = reinterpret_cast<const volatile uint8_t *>(fbAper->getVirtualAddress() + kFw13DecOff + oDt);
-+                    uint32_t chunk[256];   // 核心堆疊有限：每次 1 KiB
-+                    for (uint32_t o = 0; o < n; o += sizeof chunk) {
-+                        const uint32_t m = n - o < sizeof chunk ? n - o : static_cast<uint32_t>(sizeof chunk);
-+                        const volatile uint32_t *p32 = reinterpret_cast<const volatile uint32_t *>(pix + o);
-+                        for (uint32_t i = 0; i < (m + 3) / 4; i++)
-+                            chunk[i] = p32[i];
-+                        outMd->writeBytes(o, chunk, m);
++                    if (fw13VcnAlias) {
++                        // VCN 寫進 DRAM 不經過 CPU cache：先把這段的 cache line 丟掉（CPU 只讀不寫，沒有 dirty line），再直接複製
++                        const uint8_t *al = reinterpret_cast<const uint8_t *>(fw13VcnAlias->getVirtualAddress());
++                        fw13Clflush(al, n);
++                        outMd->writeBytes(0, al, n);
++                        out[3] |= 0x80000000ull;   // 讓 user space 知道走了 alias
++                    } else {
++                        const volatile uint8_t *pix = reinterpret_cast<const volatile uint8_t *>(fbAper->getVirtualAddress() + kFw13DecOff + oDt);
++                        uint32_t chunk[256];   // 核心堆疊有限：每次 1 KiB
++                        for (uint32_t o = 0; o < n; o += sizeof chunk) {
++                            const uint32_t m = n - o < sizeof chunk ? n - o : static_cast<uint32_t>(sizeof chunk);
++                            const volatile uint32_t *p32 = reinterpret_cast<const volatile uint32_t *>(pix + o);
++                            for (uint32_t i = 0; i < (m + 3) / 4; i++)
++                                chunk[i] = p32[i];
++                            outMd->writeBytes(o, chunk, m);
++                        }
 +                    }
 +                    outMd->complete();
 +                } else {
@@ -317,6 +371,7 @@ diff -ruN a/src/phxbringup/PhxBringup.cpp b/src/phxbringup/PhxBringup.cpp
 +            fw13VcnSubmit(false, &us);
 +        }
 +        fw13VcnOwner = nullptr;
++        fw13VcnAliasDrop();
 +    }
 +    IOLockUnlock(fw13VcnLock);
 +}
@@ -331,8 +386,8 @@ diff -ruN a/src/phxbringup/PhxBringup.cpp b/src/phxbringup/PhxBringup.cpp
 +    return r;
 +}
 diff -ruN a/src/phxbringup/PhxNativeABI.h b/src/phxbringup/PhxNativeABI.h
---- a/src/phxbringup/PhxNativeABI.h	2026-11-24 11:36:07.331911155 +0000
-+++ b/src/phxbringup/PhxNativeABI.h	2026-11-24 11:36:07.334065128 +0000
+--- a/src/phxbringup/PhxNativeABI.h	2026-11-24 11:47:00.196900769 +0000
++++ b/src/phxbringup/PhxNativeABI.h	2026-11-24 11:47:00.201542657 +0000
 @@ -66,6 +66,11 @@
      PHXN_SEL_DBG_CLAIM = 113,      /* in: [0] 1 = mark the GPU driven (nmxgpu-claimed) and re-run matching so PhxAccel starts. */
      PHXN_SEL_DBG_SYSMEM = 111,     /* in: [0] op (1 alloc [1] bytes, 2 read [1] off, 3 write [1] off [2] val, 4 free)  out: [0] phys  [1] len/value */

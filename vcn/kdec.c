@@ -172,6 +172,8 @@ int main(int argc, char **argv)
             break;
          }
          vcn_us += (double)res[2];
+         if (n == 0 && loop == 0)
+            printf("  讀回路徑：%s\n", (res[3] & 0x80000000ull) ? "carve-out 系統記憶體（快）" : "BAR（慢）");
          md5_ctx c;
          md5_init(&c);
          const uint32_t x0 = 2 * sps->crop_left, y0 = 2 * sps->crop_top;
