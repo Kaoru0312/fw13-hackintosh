@@ -33,6 +33,9 @@
   - **重開機確認（2026-11-24 19:43）**：`phx-build` = 134、沒有 phxboot-off；phxboot.log：`[port] gpucg: 0xEC48=0x00060041 …`、`[port] sdma: F32_CNTL=0x08084000 CNTL=0x10002440 CGCG_FENCE=1 RLC_GPM_STAT=0x000c001a`、`done 19:42:53`。新 kext、閘控、SDMA 開機套用都正常。
   - **換成 build 135（2026-11-24 19:48）**：sha256 `f546af2a…`（78144 bytes），VCN 輸出改從 carve-out 系統記憶體讀。備份 build 134：`EFI/OC/PhxBringup.kext.bak-fw13-1124-194823`；release＋拓撲表的原版仍是 `bak-fw13-1124-193908`。
   - **開機自動帶起 VCN 已安裝（2026-11-24 20:0x，重開機後生效）**：`gpu/vcn-boot-install.sh`，phxboot.sh 備份 `.bak-vcn`，log `/var/log/vcn-up.log`；停用 `sudo touch /Users/Shared/gpu/vcn-off`。
+- **⚠️ 系統磁碟區已修改（2026-11-24 20:2x，重開機後生效）**：`vcn/vt/rootpatch.sh --install --yes` 把 `H264VCNDecoder.bundle`（VideoToolbox H.264 解碼外掛）放進系統磁碟區 `/dev/disk1s4` 的 `/System/Library/Video/Plug-Ins/`，並 `bless --create-snapshot` 建了新快照。修改前是 Apple 原本的密封快照 `com.apple.os.update-8EC5DFA0…`（Sealed: Yes），authenticated-root disabled、FileVault off。
+  - **還原（回到 Apple 原本的快照）**：`sudo bless --mount / --bootefi --last-sealed-snapshot` 後重開機；macOS 進不去時從 Recovery 的終端機執行，`--mount "/Volumes/Macintosh"`。只拿掉外掛：`sudo bash vcn/vt/rootpatch.sh --remove --yes`。
+  - macOS 更新會覆蓋系統快照，外掛會消失（自動更新已關）。
 - 硬解重新評估：`vcn/HWDEC-PLAN.md`（mechrevo 公開的 VCN patch 只到 build 67，解碼只有固定測試向量；build 75 的任意 H.264 解碼沒公開。先確認 YouTube 在 Safari 用哪個 codec）。
 - **硬解第 1 步通過（2026-11-24 12:49）**：`vcnctl decodetest` 從使用者空間解出 libdrm 的 864×480 H.264 畫面，NV12 總和 0x020345d8 正確（`vcn/log-1124-124918.txt`）。YouTube／Safari 用 `avc1.640028`。下一步：自己組 decode message（見 HWDEC-PLAN.md）。
 - **硬解第 2 步通過（2026-11-24 13:11）**：自己的 H.264 parser＋message 產生器解出 mechrevo 的 160×128 四象限測試檔（Y 48／200、UV 128 正確），libdrm 畫面用自己的 message 也解對。下一步：P／B 畫面（DPB 管理）。
