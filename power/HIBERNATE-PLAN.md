@@ -122,3 +122,15 @@
   → **`acpi=0x200000`、HibernationFixup、`HibernateMode=NVRAM`、BootFBSleep 都是那次休眠嘗試加的。**`acpi=` 這個值的意義：不知道。
 - pmset 紀錄和 kernel log 兩段都被 `head -40` 截在 11-22 中午以前，**看不到 11-22 20:30 之後**有沒有真的睡過。要再查一次。
 - 診斷報告：11-22 之後只有 02:42、03:08 兩個 watchdog panic（螢幕關閉 VBL 問題，已修），沒有 Sleep Wake Failure。
+
+### 先前休眠嘗試的 pmset 紀錄（11-22 20:30 → 11-23 02:00）
+
+- GPU 接管當時是關的（Sleep notification 裡是 `IONDRVFramebuffer driver is slow`）。
+- 20:54、21:13、21:18：`Entering Sleep state` → 下一筆就是新開機的 `ShutdownCause 5`，沒有 Wake。
+- 21:32：睡 6 秒 `DarkWake from Normal Sleep`（XHC0），`hibmode=25`。21:38、21:54：`DarkWake from Invalid`、WakeTime 0.002 s（睡眠一開始就被取消）。
+- **21:55 到 11-23 01:13 的 9 次都是同一個樣子**：`Entering Sleep state` → 約 1 分鐘後新開機，`ShutdownCause 5: Software initiated shutdown`，沒有任何 Wake／Hibernate 還原紀錄。
+  最後一次 01:13（BootFBSleep 1.7.0 是 01:09 裝的），之後就停了。
+- 推論（未證實）：休眠斷電本身是軟體發起的關機，所以「睡下去 → 寫映像 → 斷電」大概走完了；按電源鍵開機時沒有從映像還原，而是重新開機。
+  這正是 PR #20 文件寫的狀況：PC 上沒有東西把 `IOHibernateRTCVariables` 存起來，OpenCore 回報 "RTC hibernation is 0, NVRAM hibernation is 0 / Not Found"、
+  boot.efi `EB|H:FAIL`；HibernationFixup 1.5.4 在 26.7 沒存到。PhxSleepPolicy 的 `copyKey()` 就是補這一段。
+  要證實：裝 PhxSleepPolicy 後在 OpenCore debug log（或 `nvram -p` 喚醒前）看金鑰有沒有存進去。
