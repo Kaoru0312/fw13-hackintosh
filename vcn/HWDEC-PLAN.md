@@ -78,3 +78,11 @@ H.264 硬解只對「真的送 H.264 給 VideoToolbox」的播放有用。YouTub
   message 格式可用（A/B 對照）。
 - `vcnctl decodefile --in <檔>`：解檔案的第一張 IDR。vcn_quadrants.h264 的預期：四象限 Y 約 48／200、UV 約 128（mechrevo vcn/README.md）。
 - 還沒做：P／B 畫面需要的 POC 計算與 DPB 管理（sliding window、MMCO）。
+
+## 第 2 步上機結果（2026-11-24 13:11，log `vcn/log-1124-131155.txt`）✅
+
+- `decodetest --ourmsg`：同一段 libdrm bitstream、decode message 換成自己產生的（Mesa TIER0 欄位、decode 結構 188 bytes、avc @0xf4）→
+  **總和 0x020345d8 = 期望值**。→ Mesa 現行版的 message 格式（array mode 3、mif_wrc_en 1、field mode 0、自算 dpb／ctx 大小）在 FW13 的 VCN 4.0.2 上可用。
+- `decodefile vcn_quadrants.h264`（160×128，2 個 slice、107 bytes）：整條路（parser → message → VCN）第一次解真的檔案。
+  **四象限 Y 平均 48.0／199.9／200.0／48.0、UV 平均 128.0**，跟 mechrevo README 寫的編碼來源（Y = 48／200、UV = 128）一致。
+- 下一步：P／B 畫面（POC 計算、DPB 管理）。容器裡有 ffmpeg，可以產生多張畫面的測試檔，並用 ffmpeg 的解碼結果當答案（每張畫面的 MD5）。
