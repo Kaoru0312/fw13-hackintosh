@@ -35,5 +35,7 @@ void h264vcn_size(const H264Vcn *v, int32_t *w, int32_t *h);
 CFDictionaryRef h264vcn_copy_pixel_buffer_attributes(const H264Vcn *v);
 // 統計：kext 回報的 VCN 時間（µs）
 uint32_t h264vcn_last_vcn_us(const H264Vcn *v);
+// 1 = 經 N48N（IOAccelPhxNativeClient）開的、0 = 經 F13V
+int h264vcn_via_native(const H264Vcn *v);
 
 #endif

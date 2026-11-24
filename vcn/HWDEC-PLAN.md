@@ -196,3 +196,13 @@ build 135（補丁 02 更新）：輸出改從 carve-out 的系統記憶體位�
 - Safari YouTube（2026-11-24 20:39）：`avc1.640028`、1920×1080@24，**891 dropped of 3851**（約 23%，軟體解碼）。
 - 修改（build 136 ＋ 外掛 0.2）：kext 新增 user client 類別 `AppleVideoToolboxParavirtualizationUserClient`（type 'F13V'，只做 selector 130）；
   外掛改開這個 client（不再 Hello，從 registry 讀 phx-build ≥ 136）、Info.plist 加 `VTRating 300`、CreateInstance 時寫 log。
+
+### build 136 ＋ 外掛 0.2 上機（2026-11-24 20:5x）
+
+- **系統預設的 VideoToolbox 選了這個外掛並用 VCN 解碼成功**（20:58，`vttest` 不加選項）：`UsingHardwareAcceleratedVideoDecoder = true`、
+  t5_1080p 30 張 MD5 全部相同、每張 8.29 ms（同一個工具用系統軟體解碼 11.91 ms）。外掛 log：VTDecoderXPCService 裡 CreateInstance → `session 1920x1080`。
+  → VTRating 300 讓系統優先選它；kext 的 `AppleVideoToolboxParavirtualizationUserClient` 過了 VTDecoderXPCService 的沙盒。
+- 開機後約 2 分鐘 phxboot 才跑完（這次 done 20:56:21），在那之前外掛回報 NOT_AVAILABLE、系統退回軟體解碼（20:56:14 的 vttest 就是這樣，MD5 照樣對）。
+- Safari（20:55）：外掛是在 **com.apple.WebKit.GPU** 裡被建立的，但回報「PhxBringup 太舊」：在那個程序讀 registry 屬性 phx-build 讀到 0（推論是沙盒）。
+  外掛 0.3：不讀 phx-build；先開 F13V，打不開再開 N48N（Hello，build ≥ 135），log 會寫用了哪個。
+- 這次開機 SDMA 那行 `RLC_GPM_STAT=0x00140016`（上次開機 0x000c001a）：sdma.sh 解除 halt 後只等 1 秒就讀，可能太早；待查。

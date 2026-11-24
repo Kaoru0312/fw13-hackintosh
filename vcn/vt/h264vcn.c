@@ -14,7 +14,9 @@
 #define UC_TYPE 0x46313356u   // 'F13V'：kext 的 AppleVideoToolboxParavirtualizationUserClient（VTDecoderXPCService 的沙盒放行的名字）
 #define SEL_FW13_VCN_DEC 130
 #define FW13_VCN_MAGIC 0x44333146u
-#define MIN_KEXT_BUILD 136u
+#define UC_TYPE_NATIVE 0x4E34384Eu   // 'N48N'
+#define SEL_HELLO 0
+#define MIN_KEXT_BUILD_NATIVE 135u   // N48N 上的 selector 130＋carve-out 讀回
 #define BS_CAP (4u << 20)
 
 typedef struct {
@@ -24,6 +26,7 @@ typedef struct {
 struct H264Vcn {
    io_connect_t conn;
    int session_open;
+   int via_native;   // 1 = 用 N48N 開的（Safari 的 GPU 程序）
    h264_params ps;
    int sps_id;
    h264_dpb dpb;
@@ -40,6 +43,7 @@ struct H264Vcn {
 static void seterr(H264Vcn *v, const char *m) { snprintf(v->err, sizeof v->err, "%s", m); }
 const char *h264vcn_last_error(const H264Vcn *v) { return v->err; }
 uint32_t h264vcn_last_vcn_us(const H264Vcn *v) { return v->vcn_us; }
+int h264vcn_via_native(const H264Vcn *v) { return v->via_native; }
 void h264vcn_size(const H264Vcn *v, int32_t *w, int32_t *h)
 {
    *w = (int32_t)v->cw;
@@ -122,28 +126,38 @@ H264Vcn *h264vcn_create(const uint8_t *c, size_t len, int *why, char *msg, size_
    v->out = malloc(v->l.dt_size);
    if (!v->inbuf || !v->bs || !v->out) FAIL(H264VCN_MEMORY, "記憶體不足");
 
+   // 先開 'F13V'（AppleVideoToolboxParavirtualizationUserClient：VTDecoderXPCService 的沙盒放行）；
+   // 打不開再開 'N48N'（IOAccelPhxNativeClient＋Hello：Safari 的 com.apple.WebKit.GPU 沙盒放行，nullarc 的 Metal 也是用它）。
+   // 不讀 phx-build：2026-11-24 在 WebKit.GPU 裡讀 registry 屬性拿到 0（沙盒）；舊 kext 不認得 'F13V' 時 IOServiceOpen 會失敗、
+   // 'N48N' 的 selector 130 在 build 134 以上才有，更舊的會回 kIOReturnBadArgument → 建立 session 時報錯。
    io_service_t svc = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("PhxBringup"));
    if (!svc) FAIL(H264VCN_NOT_AVAILABLE, "找不到 PhxBringup");
-   uint32_t build = 0;
-   CFTypeRef bp = IORegistryEntryCreateCFProperty(svc, CFSTR("phx-build"), kCFAllocatorDefault, 0);
-   if (bp && CFGetTypeID(bp) == CFNumberGetTypeID()) CFNumberGetValue((CFNumberRef)bp, kCFNumberSInt32Type, &build);
-   if (bp) CFRelease(bp);
-   if (build < MIN_KEXT_BUILD) { IOObjectRelease(svc); FAIL(H264VCN_NOT_AVAILABLE, "PhxBringup 太舊（要 build 136 以上）"); }
-   kern_return_t kr = IOServiceOpen(svc, mach_task_self(), UC_TYPE, &v->conn);
-   IOObjectRelease(svc);
+   kern_return_t kr = IOServiceOpen(svc, mach_task_self(), UC_TYPE, &v->conn), kr2 = 0;
    if (kr) {
-      snprintf(msg, msglen, "打不開 PhxBringup 的 VCN client（kr 0x%x）", kr);
+      v->conn = IO_OBJECT_NULL;
+      kr2 = IOServiceOpen(svc, mach_task_self(), UC_TYPE_NATIVE, &v->conn);
+      if (!kr2) {
+         uint64_t hin[2] = {1, 0}, hout[4];
+         uint32_t hn = 4;
+         if (IOConnectCallScalarMethod(v->conn, SEL_HELLO, hin, 2, hout, &hn) || hout[1] < MIN_KEXT_BUILD_NATIVE) kr2 = kIOReturnUnsupported;
+      }
+   }
+   IOObjectRelease(svc);
+   if (kr && kr2) {
+      snprintf(msg, msglen, "打不開 PhxBringup（F13V kr 0x%x、N48N kr 0x%x）", kr, kr2);
       *why = H264VCN_NOT_AVAILABLE;
       h264vcn_destroy(v);
       return NULL;
    }
+   v->via_native = kr != 0;
 
    v->handle = 0x46770000u | (__atomic_add_fetch(&g_handles, 1, __ATOMIC_RELAXED) & 0xffffu);
    uint32_t w[14];
    uint32_t n = vcn_h264_session_msg(w, 0, v->handle, &v->l);
    uint64_t res[4];
    int r = kcall(v, 1, n * 4, w, 0, NULL, 0, NULL, 0, res);
-   if (r == 1) FAIL(H264VCN_NOT_AVAILABLE, "VCN 沒帶起來（開機時 phxboot 要跑 vcnctl up）");
+   if (r == -1) FAIL(H264VCN_NOT_AVAILABLE, "kext 不認得 selector 130（PhxBringup 太舊）");
+   if (r == 1) FAIL(H264VCN_NOT_AVAILABLE, "VCN 沒帶起來（開機後約 2 分鐘 phxboot 才會跑 vcnctl up）");
    if (r == 2) FAIL(H264VCN_NOT_AVAILABLE, "VCN 正在被別的 session 使用");
    if (r) FAIL(H264VCN_DEVICE, "建立 session 失敗");
    v->session_open = 1;

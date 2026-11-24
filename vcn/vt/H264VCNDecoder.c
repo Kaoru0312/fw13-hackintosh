@@ -408,8 +408,8 @@ static OSStatus start_session(State* s, VTVideoDecoderSession session,
   set_format(s, fmt);
   pthread_mutex_unlock(&s->lock);
   os_log(logger(),
-         "session %dx%d: %ld started, %ld ended, %ld live in this process",
-         width, height, started, ended, live);
+         "session %dx%d（經 %{public}s）: %ld started, %ld ended, %ld live in this process",
+         width, height, h264vcn_via_native(vcn) ? "N48N" : "F13V", started, ended, live);
   return noErr;
 }
 static OSStatus dec_start_session(VTVideoDecoderRef dec,
