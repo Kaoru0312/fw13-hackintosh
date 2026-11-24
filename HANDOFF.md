@@ -30,6 +30,7 @@
 - 硬解重新評估：`vcn/HWDEC-PLAN.md`（mechrevo 公開的 VCN patch 只到 build 67，解碼只有固定測試向量；build 75 的任意 H.264 解碼沒公開。先確認 YouTube 在 Safari 用哪個 codec）。
 - **硬解第 1 步通過（2026-11-24 12:49）**：`vcnctl decodetest` 從使用者空間解出 libdrm 的 864×480 H.264 畫面，NV12 總和 0x020345d8 正確（`vcn/log-1124-124918.txt`）。YouTube／Safari 用 `avc1.640028`。下一步：自己組 decode message（見 HWDEC-PLAN.md）。
 - **SDMA 解除 halt（GFXOFF 階段 1a，2026-11-24 05:24，執行期、重開機就恢復）**：RLC_GPM_STAT 回到 Linux 的 0x000c001a；閒置封裝中位數 8.03 → **7.27 W**（不同次開機比較，見 GFXOFF-PLAN.md）。上游 RX16 有 SDMA 運作時自己重開的紀錄，長時間穩定性觀察中；設回 halt：`sudo bash /Users/kaoru/fw13-hackintosh/gpu/sdma-test.sh --halt`。
+- **SDMA 開機自動套用已安裝（2026-11-24 13:0x）**：執行期從 05:24 運作到 12:5x（約 7.5 小時）沒有自己重開；`gpu/sdma-install.sh` 在 phxboot.sh 第 113 行後插入（備份 `phxboot.sh.bak-sdma`），重開機後生效、待確認 log。停用：`sudo touch /Users/Shared/gpu/sdma-off`。
 - `vcn/PHASE3.md` 的路線 D「不可行」要更正：ryzenstatus-utils 的文件寫 `/System/Library/Video/Plug-Ins` 的解碼器不檢查簽章（FW13 沒驗證）。
 
 ## 0a. 最新狀態速覽（2026-11-21 22:50）
