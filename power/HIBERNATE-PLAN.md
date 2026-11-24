@@ -111,3 +111,14 @@
     `AppleACPIPlatformExpert::queryPlatformCanSleep`（"hibernatemode %u -> allow"）、`getSystemStateForSleepType`（"sleep type %u -> ACPI S%u"）。
     跟 PR #20 是同一件事的不同做法（PR #20：政策 handler＋NVRAM 金鑰；BootFBSleep：Lilu 掛函式）。結果如何、為什麼停下來：不知道，要問使用者。
   - `cppc/src`：沒有 remote 的 grafted clone，HEAD `77bac94 PhxCPPC 1.0.2`，跟 PhxAccel 無關。
+
+### hib-history 結果（2026-11-25 03:51，`power/hib-history-1125-035140.txt` 在 Mac 上）
+
+- **原始碼都找不到**：BootFBSleep 只有 `power/bootfbsleep/build/`（.o＋kext）和 `oc/kexts/BootFBSleep.kext`；`display/dscl/` 只有 Linux 的
+  `dcn_3_1_4_offset.h`、`dcn_3_1_4_sh_mask.h`（11-23 02:13），沒有 PhxAccel 原始碼；scratch-workspaces 也沒有。→ `d9c4d407` 的原始碼視為遺失。
+- **先前的休眠嘗試時間線**（ESP 的 config 備份）：`bak-1122b`（11-22 18:53）還是 `HibernateMode=None`、沒有 HibernationFixup／BootFBSleep。
+  `bak-1122c`（20:33）開始 `HibernateMode=NVRAM`＋HibernationFixup；`bak-1122d`（20:45）加 BootFBSleep；`bak-1122e`（20:50）加 `acpi=0x200000`
+  （`bak-1122f` 21:05 曾是 `acpi=0x1200000`，之後回到 0x200000）。BootFBSleep 1.0.0（11-22 20:33）→ 1.7.0（11-23 01:09）共 8 版。
+  → **`acpi=0x200000`、HibernationFixup、`HibernateMode=NVRAM`、BootFBSleep 都是那次休眠嘗試加的。**`acpi=` 這個值的意義：不知道。
+- pmset 紀錄和 kernel log 兩段都被 `head -40` 截在 11-22 中午以前，**看不到 11-22 20:30 之後**有沒有真的睡過。要再查一次。
+- 診斷報告：11-22 之後只有 02:42、03:08 兩個 watchdog panic（螢幕關閉 VBL 問題，已修），沒有 Sleep Wake Failure。
