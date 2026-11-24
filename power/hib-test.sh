@@ -3,7 +3,7 @@
 # （PhxAccel 還沒有 PR #20 的 phxfb_wake／nvaccelfb=9，喚醒後畫面大概不會回來）。
 #   on ：boot-args 拿掉 -v、debug=0x100（PR #20：帶著它們進入睡眠會卡住）；
 #        pmset -a hibernatemode 25 standby 0 autopoweroff 0 powernap 0，然後 disablesleep 0。
-#        sleep（閒置自動睡眠）維持 0，只有手動「睡眠」或闔上螢幕才會睡。
+#        sleep（閒置自動睡眠）設成 0（AC 和電池都是；原本電池是 1 分鐘），只有手動「睡眠」或闔上螢幕才會睡。
 #   off：boot-args 從 config.plist.bak-hib2 還原（-v、debug=0x100 回來）；pmset disablesleep 1、hibernatemode 照 on 之前存下的值。
 # 都要 sudo、要掛 ESP（boot-args 在 config.plist；改了要重開機才生效，pmset 立刻生效）：
 #   sudo sh -c 'mkdir -p /tmp/int; diskutil mount -mountPoint /tmp/int disk0s1; bash /Users/kaoru/fw13-hackintosh/power/hib-test.sh on'
@@ -32,7 +32,7 @@ on)
   echo "  現在：$($PB -c "Print $K" "$P")"
   pmset -g custom > "$SAVE"
   echo "== pmset 原本的設定存在 ${SAVE}"
-  pmset -a hibernatemode 25 standby 0 autopoweroff 0 powernap 0 && pmset -a disablesleep 0
+  pmset -a hibernatemode 25 standby 0 autopoweroff 0 powernap 0 sleep 0 && pmset -a disablesleep 0
   echo "== pmset 現在："
   pmset -g | grep -E 'SleepDisabled|hibernatemode|standby |autopoweroff|powernap| sleep '
   sync
@@ -44,10 +44,13 @@ off)
     hb=$(awk '/^Battery Power/{s="b"} /^AC Power/{s="c"} $1=="hibernatemode"{print s, $2}' "$SAVE")
     b=$(printf '%s\n' "$hb" | awk '$1=="b"{print $2}'); c=$(printf '%s\n' "$hb" | awk '$1=="c"{print $2}')
     [ -n "$b" ] && pmset -b hibernatemode "$b"; [ -n "$c" ] && pmset -c hibernatemode "$c"
+    sl=$(awk '/^Battery Power/{s="b"} /^AC Power/{s="c"} $1=="sleep"{print s, $2}' "$SAVE")
+    b=$(printf '%s\n' "$sl" | awk '$1=="b"{print $2}'); c=$(printf '%s\n' "$sl" | awk '$1=="c"{print $2}')
+    [ -n "$b" ] && pmset -b sleep "$b"; [ -n "$c" ] && pmset -c sleep "$c"
   fi
   [ -f "$BAK" ] && { cp "$BAK" "$P" && cmp -s "$BAK" "$P" && mv "$BAK" "$BAK.used-$(date +%m%d-%H%M%S)" && echo "== config.plist 從 bak-hib2 還原（重開機後 -v、debug=0x100 回來）"; }
   echo "== pmset 現在："
-  pmset -g | grep -E 'SleepDisabled|hibernatemode'
+  pmset -g | grep -E 'SleepDisabled|hibernatemode| sleep '
   sync
   echo "✅ off 完成：睡眠又關掉了"
   ;;

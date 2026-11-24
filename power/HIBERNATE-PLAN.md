@@ -170,3 +170,14 @@
 - 喚醒時 systemd-boot 預設是 CachyOS（`LoaderEntryDefault = linux-cachyos-lts.conf`），**要在 3 秒內手動選 macOS（OpenCore）**；選錯了開進 CachyOS 也沒關係，
   映像只有 boot.efi 會讀，下次選 macOS 會再試著還原（或丟掉映像正常開機）。
 - 風險：MT7922 在睡眠中途失敗後可能要完全斷電（關機、拔電、按住電源 20 秒）才恢復。
+
+### 第一次測試（2026-11-25 04:2x）：被 `kPMPCIUnsupported` 擋下，**更正：macOS 下沒有 `_S3`**
+
+- `debug.phxsleep_calls = 1`、`last_type = 4`（休眠）、`last_mode = 25`，`phxsleep_key_writes = 0`；`/var/vm/sleepimage` 16 GiB 建好了；uptime 沒斷（沒有斷電）。
+- kernel：04:26:50 `sleep reason Idle Sleep` → `System sleep prevented by kPMCPUAssertion`；04:27:05 DarkWake 中再試 → **`System sleep prevented by kPMPCIUnsupported`**。
+  PR #20 docs/SLEEP.md：沒有 `_S3` 時「every sleep request ends in `System sleep prevented by kPMPCIUnsupported`」。
+  → 前面用 `IOSleepSupported = Yes` 推論 `_S3` 存在**是錯的**；先前 BootFBSleep 掛 `AppleACPIPlatformExpert::queryPlatformCanSleep` 就是在繞這一關。
+- 另外：電池的 pmset `sleep 1`（閒置 1 分鐘就睡），`hib-test.sh on` 原本只照 AC 的 `sleep 0` 說「只有手動才會睡」，是錯的；
+  已改成 on 時 `pmset -a sleep 0`、off 時還原。這次的「變黑、半亮」是閒置睡眠一直被觸發又被擋。
+- 下一步：SSDT-S3（只在 Darwin、`\_S3` 不存在時定義），數值照 DSDT 條件式裡的 `_S3`。需要 `acpi/tables-linux/DSDT.dsl`（在 Mac 上，gitignore）。
+- `hib-test.sh off` 已跑（04:3x）：disablesleep 1、boot-args 的 `-v`、`debug=0x100` 回來（重開後生效）。
