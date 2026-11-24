@@ -95,3 +95,11 @@ H.264 硬解只對「真的送 H.264 給 VideoToolbox」的播放有用。YouTub
 - 待辦：vcnctl `decodefile` 改成解全部畫面、依 group／POC 排序後算 MD5 跟 `.framemd5` 比對。
 - 動態桌布：P／B 做完也還不能用，還差 kext 解碼介面（現在走 root＋phxdebug 的除錯介面、每個 dword 一次呼叫，太慢）和 VideoToolbox 外掛；
   另外 Aerial 桌布影片用的 codec 是 H.264 還是 HEVC，沒查證（HEVC 要另外寫 parser）。
+
+### 第 3 步進度（2026-11-24 晚上）
+
+- `h264_dpb.c` 修正 MMCO5 之後的 POC 狀態；`h264_stream.c` 切畫面；`md5.c`（RFC 1321，已用 md5sum 驗證）。
+- 主機端模擬（`test_h264.c` 第 3 部分）：parser＋DPB 跑完 t1–t4，依 (group, POC) 排序的解碼順序**全部跟 ffprobe 的 coded_picture_number 一致**
+  （t1 30 張、t2 30 張、t3 60 張、t4 40 張；最多 4 張參考、slot 最大 4）。`testdata/*.order` 是 ffprobe 的答案。
+- `vcnctl decodefile` 改成解整個檔：每張畫面依 DPB 狀態組 message、送 VCN、讀回輸出算 MD5，最後排成顯示順序跟 `.framemd5` 逐張比對。
+  沒上機。t1–t4 用的 x264 參數有沒有產生 MMCO（adaptive marking），沒有確認；sliding window 一定有用到。

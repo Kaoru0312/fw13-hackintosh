@@ -10,6 +10,8 @@
 #include "../vcn_dec_vector.h"
 #include "h264_parse.h"
 #include "vcn_h264_msg.h"
+#include "h264_dpb.h"
+#include "h264_stream.h"
 
 static int fails;
 #define CHECK(c, ...) do { if (!(c)) { printf("  ✗ " __VA_ARGS__); printf("\n"); fails++; } } while (0)
@@ -118,11 +120,74 @@ static int test_file(const char *path)
    return 0;
 }
 
+
+// 3. 用 parser + DPB 模擬整支串流：依 (group, POC) 排序的解碼順序要等於 ffprobe 的 coded_picture_number（.order 檔）
+typedef struct { uint32_t group; int32_t poc; int idx; } outrec;
+static int cmp_out(const void *a, const void *b)
+{
+   const outrec *x = a, *y = b;
+   if (x->group != y->group) return x->group < y->group ? -1 : 1;
+   return x->poc < y->poc ? -1 : x->poc > y->poc;
+}
+
+static void test_sim(const char *path)
+{
+   char order_path[512];
+   snprintf(order_path, sizeof order_path, "%.*s.order", (int)(strlen(path) - 5), path);
+   FILE *fo = fopen(order_path, "r");
+   if (!fo)
+      return;   // 沒有答案檔的不測
+   int expect[1024], ne = 0;
+   while (ne < 1024 && fscanf(fo, "%d", &expect[ne]) == 1) ne++;
+   fclose(fo);
+   FILE *f = fopen(path, "rb");
+   static uint8_t buf[4 << 20], bs[2 << 20];
+   size_t size = fread(buf, 1, sizeof buf, f);
+   fclose(f);
+   static h264_stream st;
+   h264_stream_init(&st, buf, size);
+   h264_dpb dpb;
+   int inited = 0, n = 0, maxrefs = 0;
+   uint32_t maxslot = 0;
+   static outrec out[1024];
+   h264_picture p;
+   int r;
+   while ((r = h264_stream_next(&st, &p, bs, sizeof bs)) == 1 && n < 1024) {
+      const h264_pps *pps = &st.ps.pps[p.first.pps_id];
+      const h264_sps *sps = &st.ps.sps[pps->sps_id];
+      if (!inited) {
+         vcn_h264_layout l;
+         vcn_h264_layout_init(&l, sps);
+         h264_dpb_init(&dpb, l.max_num_ref);
+         inited = 1;
+      }
+      vcn_h264_pic pic;
+      h264_out_info oi;
+      int b = h264_dpb_begin(&dpb, sps, &p.first, &pic, &oi);
+      CHECK(b == 0, "%s 第 %d 張 dpb_begin 失敗 %d", path, n, b);
+      if (b) break;
+      if ((int)pic.num_refs > maxrefs) maxrefs = (int)pic.num_refs;
+      if (pic.decoded_pic_idx > maxslot) maxslot = pic.decoded_pic_idx;
+      out[n].group = oi.group; out[n].poc = oi.poc; out[n].idx = n;
+      h264_dpb_end(&dpb, sps, &p.first, &pic);
+      n++;
+   }
+   CHECK(r >= 0, "%s 串流解析錯誤 %d", path, r);
+   qsort(out, n, sizeof *out, cmp_out);
+   int bad = n != ne;
+   for (int i = 0; i < n && i < ne; i++) bad |= out[i].idx != expect[i];
+   printf("== 模擬 %s：%d 張（答案 %d 張）、最多 %d 張參考、slot 最大 %u → 顯示順序%s\n", path, n, ne, maxrefs, maxslot,
+          bad ? "✗ 跟 ffprobe 不同" : "跟 ffprobe 一致 ✅");
+   if (bad) { for (int i = 0; i < n && i < 24; i++) printf("%d ", out[i].idx); printf("\n"); fails++; }
+}
+
 int main(int argc, char **argv)
 {
    test_libdrm_layout();
    for (int i = 1; i < argc; i++)
       test_file(argv[i]);
+   for (int i = 1; i < argc; i++)
+      test_sim(argv[i]);
    printf("%s\n", fails ? "✗ 有失敗" : "✅ 全部通過");
    return fails != 0;
 }

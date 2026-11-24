@@ -7,12 +7,13 @@
 #   --vm：另外跑階段 2b 的 MMHUB vmtest，結束會還原 MMHUB
 #   --dec：另外跑 decodetest（解一張固定的 864×480 H.264 畫面，用 VRAM +0xD000000 起約 16 MiB，先確認那段 3 秒內沒被改才寫）
 #   --dec-ours：同上，但 decode message 用自己的產生器（h264/vcn_h264_msg.c）
-#   --decfile <檔.h264>：解這個檔的第一張畫面（IDR），message 由自己的 parser＋產生器產生
+#   --decfile <檔.h264>（可以給多次）：解整個檔（I／P／B），旁邊有同名 .framemd5 就逐張比對 MD5
 set -u
 [ "$(id -u)" = 0 ] || { echo "請用 sudo 執行"; exit 1; }
 HERE=$(cd "$(dirname "$0")" && pwd)
 V=$HERE/vcnctl
-[ -x "$V" ] || { echo "找不到 ${V}（先編譯：clang -O2 -Wall -framework IOKit -framework CoreFoundation ${HERE}/vcnctl.c ${HERE}/h264/h264_parse.c ${HERE}/h264/vcn_h264_msg.c -o ${V}）"; exit 1; }
+H=$HERE/h264
+[ -x "$V" ] || { echo "找不到 ${V}（先編譯：clang -O2 -Wall -framework IOKit -framework CoreFoundation ${HERE}/vcnctl.c ${H}/h264_parse.c ${H}/vcn_h264_msg.c ${H}/h264_dpb.c ${H}/h264_stream.c ${H}/md5.c -o ${V}）"; exit 1; }
 [ -f "$HERE/fw/vcn_4_0_2.bin" ] || { echo "找不到 $HERE/fw/vcn_4_0_2.bin"; exit 1; }
 pgrep -x "AMD Power Gadget" >/dev/null && { echo "AMD Power Gadget 開著，請先關掉"; exit 1; }
 [ -e /Users/Shared/gpu/phxboot-off ] && { echo "GPU 接管是關的（phxboot-off），PSP ring 可能沒建立，停止"; exit 1; }
@@ -32,8 +33,15 @@ case " $* " in *" --dec "*) DEC=1; if [ $IB = 0 ]; then "$V" decodetest --out "$
 DECO=-
 case " $* " in *" --dec-ours "*) DECO=1; if [ $IB = 0 ]; then "$V" decodetest --ourmsg --out "$HERE/dec-ours-$(date +%m%d-%H%M%S).nv12"; DECO=$?; fi ;; esac
 DECF=-
-DFILE=""; prev=""; for a in "$@"; do [ "$prev" = "--decfile" ] && DFILE=$a; prev=$a; done
-if [ -n "$DFILE" ]; then DECF=1; if [ $IB = 0 ]; then "$V" decodefile --in "$DFILE" --out "$HERE/decfile-$(basename "$DFILE" .h264)-$(date +%m%d-%H%M%S).nv12"; DECF=$?; fi; fi
+DFILES=(); prev=""; for a in "$@"; do [ "$prev" = "--decfile" ] && DFILES+=("$a"); prev=$a; done
+if [ ${#DFILES[@]} -gt 0 ]; then
+  DECF=0
+  for DFILE in "${DFILES[@]}"; do
+    if [ $IB != 0 ]; then DECF=1; break; fi
+    M=(); [ -f "${DFILE%.h264}.framemd5" ] && M=(--md5 "${DFILE%.h264}.framemd5")
+    "$V" decodefile --in "$DFILE" "${M[@]}" || DECF=1
+  done
+fi
 VM=-
 case " $* " in *" --vm "*) VM=1; if [ $IB = 0 ]; then "$V" vmtest "$@"; VM=$?; fi ;; esac
 "$V" down
