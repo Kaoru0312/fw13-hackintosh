@@ -116,6 +116,12 @@ fi
 if [ ! -e $G/sdma-off ] && [ -x $G/sdma.sh ] && [ "$($G/phxctl/phxctl regs 0xEC48 | awk '{print $2}')" = 0x00060041 ]; then
     echo "[port] sdma: $($G/sdma.sh on 2>&1)"
 fi
+# [port] fw13: bring VCN 4.0.2 up so apps can decode H.264 through PhxBringup selector 130 without root (vcn/HWDEC-PLAN.md).
+# Idle package with VCN up 7.11 W vs 7.27 W (2026-11-24). Kill switch: $G/vcn-off. Before the marker goes, like the blocks above.
+if [ ! -e $G/vcn-off ] && [ -x $G/vcn/vcnctl ]; then
+    { $G/vcn/vcnctl check && $G/vcn/vcnctl up --fw $G/vcn/vcn_4_0_2.bin && $G/vcn/vcnctl ringtest; } > /var/log/vcn-up.log 2>&1
+    echo "[port] vcn up: rc $? ($(grep -c '✅' /var/log/vcn-up.log) ok lines)"
+fi
 rm -f "$MARK"; sync
 echo "done $(date '+%T')"
 
