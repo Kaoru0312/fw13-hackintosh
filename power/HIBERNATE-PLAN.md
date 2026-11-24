@@ -190,3 +190,16 @@
   照它寫 FW13 版：Darwin 下 `If (LNot (CondRefOf (\_S3)))` 才建立 `\_S3 = {3, 3, 0, 0}`；`\_SB.FWS3` 的 `_STA` 露出 DAS3／CNSB。
   這裡用 iasl 20230628 `-vx 6142` 編過：0 error、172 bytes。
 - 加在 ACPI.Add 最後；備份 `config.plist.bak-s3`。
+
+### 第二次測試（2026-11-25 04:4x）：寫了映像、開機有進度條但還原失敗；**目前 macOS 開不進去（停在這裡）**
+
+- 先有一次跟休眠無關的 panic：04:39 重開機時 AirportMtkWlan `mwx_dma_tx_cleanup` mbuf 重複釋放（HANDOFF 有記）。
+- 04:4x `sudo pmset sleepnow`（Wi-Fi 已關）：電源燈沒熄，機器直接重開到 systemd-boot → 選 OpenCore → 韌體 "Default Boot Device Missing or Boot Failed"；
+  再選 OpenCore → boot.efi「電腦因問題重新開機」畫面（上一次結束是 panic）→ 按鍵 → **出現還原進度條，跑到一半** → 又是 "Boot Failed"。
+- 推論（未證實）：睡眠流程有走到寫映像（SSDT-S3 生效後不再被 kPMPCIUnsupported 擋），途中或寫完後 panic → 重開；NVRAM 有休眠金鑰／boot-image，
+  `HibernateSkipsPicker = true` 讓 OpenCore 每次都直接交給 boot.efi 還原，映像不完整 → 失敗 → 回韌體。panic 內容還沒看到（要進 macOS 才讀得到）。
+- **下一步（CachyOS）**：列出並刪掉 Apple GUID `7C436110-AB2A-4BBB-A880-FE41995C9F82` 下的 `boot-image`、`boot-signature`、`boot-switch-vars`、
+  `IOHibernateRTCVariables` 等 efivars，讓 OpenCore 正常開機；進 macOS 後讀 panic、`hib-test.sh off`。
+  如果刪了還是不行：CachyOS `sudo cp /boot/EFI/OC/config.plist.bak-hib2 /boot/EFI/OC/config.plist`（拿回 HibernateSkipsPicker=true 之前？不是——bak-hib2 是 on 之前的，
+  仍是 SkipsPicker=true；要關掉 SkipsPicker／HibernateMode 用 bak-hib1，那份也沒有 PhxSleepPolicy 和 SSDT-S3）。
+- 目前 macOS 端的設定：`disablesleep 0`、hibernatemode 25、sleep 0（hib-test on 的狀態）、boot-args 沒有 -v／debug=0x100。
