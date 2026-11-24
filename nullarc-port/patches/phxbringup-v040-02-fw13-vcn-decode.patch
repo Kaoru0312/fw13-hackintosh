@@ -1,16 +1,16 @@
 diff -ruN a/src/phxbringup/PhxBringup.cpp b/src/phxbringup/PhxBringup.cpp
---- a/src/phxbringup/PhxBringup.cpp	2026-11-24 12:40:57.086331857 +0000
-+++ b/src/phxbringup/PhxBringup.cpp	2026-11-24 12:40:57.092636942 +0000
+--- a/src/phxbringup/PhxBringup.cpp	2026-11-24 13:23:36.581479336 +0000
++++ b/src/phxbringup/PhxBringup.cpp	2026-11-24 13:23:36.586509519 +0000
 @@ -24,7 +24,7 @@
  
  #include "PhxNativeABI.h"
  
 -#define PHX_KEXT_BUILD 34u
-+#define PHX_KEXT_BUILD 136u   // [fw13] 34 = v0.4.0；134 = FW13 版（拓撲表＋VCN 解碼介面）；135 = 輸出改從 carve-out 的系統記憶體位址讀；136 = VideoToolbox 沙盒可開的 user client
++#define PHX_KEXT_BUILD 137u   // [fw13] 34 = v0.4.0；134 = FW13 版（拓撲表＋VCN 解碼介面）；135 = 輸出改從 carve-out 的系統記憶體位址讀；136 = VideoToolbox 沙盒可開的 user client；137 = Safari GPU 程序可開的子 service
  
  // debug.phxbos_flush: how a client's BOs are made coherent around each submission and each completed wait.
  // 2 = clflush every line (the bring-up way), 1 = clflushopt (the same lines, pipelined), 0 = none (the GPU maps system
-@@ -116,6 +116,10 @@
+@@ -116,6 +116,12 @@
      IOReturn gpuSubmit(uint32_t vmid, bool gfx, const uint64_t *ibVa, const uint32_t *ibDw, uint32_t n, uint64_t *seq);
      uint64_t gpuRetired() const;
      const phx_topology *capturedTopology() const { return topology; }
@@ -18,10 +18,12 @@ diff -ruN a/src/phxbringup/PhxBringup.cpp b/src/phxbringup/PhxBringup.cpp
 +    IOReturn fw13VcnDec(void *client, task_t task, const uint64_t in[5], uint64_t out[4]);
 +    void fw13VcnRelease(void *client);
 +    IOReturn fw13NewVcnClient(task_t owningTask, void *securityID, UInt32 type, IOUserClient **handler);
++    IOService *fw13VcnNub{nullptr};   // AppleVideoToolboxParavirtualizationDriver（Safari GPU 程序的沙盒放行的 service 類別）
++    void fw13PublishVcnNub();
      IOReturn setPowerState(unsigned long ordinal, IOService *whichDevice) override;
  
  private:
-@@ -129,6 +133,17 @@
+@@ -129,6 +135,17 @@
      void clearRing();
  
      const phx_topology *topology{nullptr};
@@ -39,7 +41,7 @@ diff -ruN a/src/phxbringup/PhxBringup.cpp b/src/phxbringup/PhxBringup.cpp
      bool isSleeping{false};
      IOPCIDevice *pci{nullptr};
      IOMemoryMap *mmio{nullptr};
-@@ -245,6 +260,7 @@
+@@ -245,6 +262,7 @@
      IOReturn doQueryInfo(IOExternalMethodArguments *a);
      IOReturn doTopology(IOExternalMethodArguments *a);
      IOReturn doReadRegs(IOExternalMethodArguments *a);
@@ -47,7 +49,7 @@ diff -ruN a/src/phxbringup/PhxBringup.cpp b/src/phxbringup/PhxBringup.cpp
      IOReturn doBoCreate(IOExternalMethodArguments *a);
      IOReturn doBoFree(IOExternalMethodArguments *a);
      IOReturn doBoImportHost(IOExternalMethodArguments *a);
-@@ -342,6 +358,7 @@
+@@ -342,6 +360,7 @@
      doorbellMap = pci->mapDeviceMemoryWithRegister(kIOPCIConfigBaseAddress2);
      smuLock = IOLockAlloc();
      gpuLock = IOLockAlloc();
@@ -55,11 +57,24 @@ diff -ruN a/src/phxbringup/PhxBringup.cpp b/src/phxbringup/PhxBringup.cpp
      uint32_t dbg = 0;
      debug = PE_parse_boot_argn("phxdebug", &dbg, sizeof(dbg)) && dbg == 1;
      if (mmio) {
-@@ -406,6 +423,11 @@
+@@ -367,6 +386,7 @@
+         thread_call_enter_delayed(hangCall, d);
+     }
+     registerService();
++    fw13PublishVcnNub();
+     return true;
+ }
+ 
+@@ -406,6 +426,16 @@
          IOLockFree(gpuLock);
          gpuLock = nullptr;
      }
 +    fw13VcnAliasDrop();
++    if (fw13VcnNub) {
++        fw13VcnNub->terminate();
++        fw13VcnNub->release();
++        fw13VcnNub = nullptr;
++    }
 +    if (fw13VcnLock) {
 +        IOLockFree(fw13VcnLock);
 +        fw13VcnLock = nullptr;
@@ -67,7 +82,7 @@ diff -ruN a/src/phxbringup/PhxBringup.cpp b/src/phxbringup/PhxBringup.cpp
      if (doorbellMap) {
          doorbellMap->release();
          doorbellMap = nullptr;
-@@ -1313,6 +1335,8 @@
+@@ -1313,6 +1343,8 @@
          sysctl_register_oid(&sysctl__debug_phx_hang_ms);
          sysctl_register_oid(&sysctl__debug_phx_hang_kills);
      }
@@ -76,7 +91,7 @@ diff -ruN a/src/phxbringup/PhxBringup.cpp b/src/phxbringup/PhxBringup.cpp
      if (type != PHXN_UC_TYPE)
          return kIOReturnBadArgument;
      IOAccelPhxNativeClient *client = OSTypeAlloc(IOAccelPhxNativeClient);
-@@ -1376,6 +1400,8 @@
+@@ -1376,6 +1408,8 @@
          owner->releaseSession();
          sessionClaimed = false;
      }
@@ -85,7 +100,7 @@ diff -ruN a/src/phxbringup/PhxBringup.cpp b/src/phxbringup/PhxBringup.cpp
      terminate();
      return kIOReturnSuccess;
  }
-@@ -1461,6 +1487,7 @@
+@@ -1461,6 +1495,7 @@
          case PHXN_SEL_DBG_SYSMEM: r = doDbgSysMem(a); break;
          case PHXN_SEL_DBG_ADOPTQ: r = doDbgAdoptQueue(a); break;
          case PHXN_SEL_DBG_CLAIM: r = doDbgClaim(a); break;
@@ -93,7 +108,7 @@ diff -ruN a/src/phxbringup/PhxBringup.cpp b/src/phxbringup/PhxBringup.cpp
          default:                 r = kIOReturnBadArgument; break;
          }
      }
-@@ -2201,3 +2228,386 @@
+@@ -2201,3 +2236,437 @@
      a->scalarOutput[2] = em;
      return kIOReturnSuccess;
  }
@@ -430,6 +445,8 @@ diff -ruN a/src/phxbringup/PhxBringup.cpp b/src/phxbringup/PhxBringup.cpp
 +
 +bool AppleVideoToolboxParavirtualizationUserClient::start(IOService *provider) {
 +    owner = OSDynamicCast(PhxBringup, provider);
++    if (!owner && provider)   // 經子 service（AppleVideoToolboxParavirtualizationDriver）開的
++        owner = OSDynamicCast(PhxBringup, provider->getProvider());
 +    return owner && IOUserClient::start(provider);
 +}
 +
@@ -450,7 +467,8 @@ diff -ruN a/src/phxbringup/PhxBringup.cpp b/src/phxbringup/PhxBringup.cpp
 +
 +IOReturn AppleVideoToolboxParavirtualizationUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments *a,
 +                                                                      IOExternalMethodDispatch *, OSObject *, void *) {
-+    if (selector != PHXN_SEL_FW13_VCN_DEC || !owner)
++    // Safari GPU 程序的沙盒在 ENABLE_SANDBOX_MESSAGE_FILTER 時只放行 method 0–4（com.apple.WebKit.GPUProcess.sb），所以解碼也接受 selector 0
++    if ((selector != 0 && selector != PHXN_SEL_FW13_VCN_DEC) || !owner)
 +        return kIOReturnBadArgument;
 +    if (a->scalarInputCount != 5 || a->scalarOutputCount != 4 || a->structureInputSize || a->structureOutputSize ||
 +        a->structureInputDescriptor || a->structureOutputDescriptor)
@@ -480,9 +498,57 @@ diff -ruN a/src/phxbringup/PhxBringup.cpp b/src/phxbringup/PhxBringup.cpp
 +    *handler = c;
 +    return kIOReturnSuccess;
 +}
++
++// ==== [fw13] Safari GPU 程序用的子 service ====
++// com.apple.WebKit.GPUProcess.sb（Cryptex 裡的 WebKit.framework/Resources）不准開 PhxBringup 這個 service
++// （log：deny(1) iokit-open-service PhxBringup），但放行 (iokit-registry-entry-class "AppleVideoToolboxParavirtualizationDriver")
++// 和 user client AppleVideoToolboxParavirtualizationUserClient（訊息過濾開著時只放行 method 0–4）。所以在 PhxBringup 底下掛一個
++// 同名的子 service，它的 newUserClient 給出同一個解碼 client。原本的 Apple kext 只在虛擬機載入，FW13 實機上沒有。
++class AppleVideoToolboxParavirtualizationDriver : public IOService {
++    OSDeclareDefaultStructors(AppleVideoToolboxParavirtualizationDriver)
++public:
++    IOReturn newUserClient(task_t owningTask, void *securityID, UInt32 type, IOUserClient **handler) override;
++};
++
++OSDefineMetaClassAndStructors(AppleVideoToolboxParavirtualizationDriver, IOService)
++
++IOReturn AppleVideoToolboxParavirtualizationDriver::newUserClient(task_t owningTask, void *securityID, UInt32 type,
++                                                                  IOUserClient **handler) {
++    if (type != PHXN_FW13_VCN_UC_TYPE)
++        return kIOReturnBadArgument;
++    AppleVideoToolboxParavirtualizationUserClient *c = OSTypeAlloc(AppleVideoToolboxParavirtualizationUserClient);
++    if (!c)
++        return kIOReturnNoMemory;
++    if (!c->initWithTask(owningTask, securityID, type) || !c->attach(this)) {
++        c->release();
++        return kIOReturnNoMemory;
++    }
++    if (!c->start(this)) {
++        c->detach(this);
++        c->release();
++        return kIOReturnError;
++    }
++    *handler = c;
++    return kIOReturnSuccess;
++}
++
++void PhxBringup::fw13PublishVcnNub() {
++    if (fw13VcnNub)
++        return;
++    AppleVideoToolboxParavirtualizationDriver *n = OSTypeAlloc(AppleVideoToolboxParavirtualizationDriver);
++    if (!n)
++        return;
++    if (!n->init() || !n->attach(this)) {
++        n->release();
++        return;
++    }
++    n->setProperty("fw13-vcn-decode", true);   // 方便在 ioreg 認出這是 FW13 的，不是 Apple 的
++    n->registerService();
++    fw13VcnNub = n;
++}
 diff -ruN a/src/phxbringup/PhxNativeABI.h b/src/phxbringup/PhxNativeABI.h
---- a/src/phxbringup/PhxNativeABI.h	2026-11-24 12:40:57.086619193 +0000
-+++ b/src/phxbringup/PhxNativeABI.h	2026-11-24 12:40:57.092541390 +0000
+--- a/src/phxbringup/PhxNativeABI.h	2026-11-24 13:23:36.581687712 +0000
++++ b/src/phxbringup/PhxNativeABI.h	2026-11-24 13:23:36.586361515 +0000
 @@ -66,6 +66,11 @@
      PHXN_SEL_DBG_CLAIM = 113,      /* in: [0] 1 = mark the GPU driven (nmxgpu-claimed) and re-run matching so PhxAccel starts. */
      PHXN_SEL_DBG_SYSMEM = 111,     /* in: [0] op (1 alloc [1] bytes, 2 read [1] off, 3 write [1] off [2] val, 4 free)  out: [0] phys  [1] len/value */

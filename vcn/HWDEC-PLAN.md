@@ -206,3 +206,14 @@ build 135（補丁 02 更新）：輸出改從 carve-out 的系統記憶體位�
 - Safari（20:55）：外掛是在 **com.apple.WebKit.GPU** 裡被建立的，但回報「PhxBringup 太舊」：在那個程序讀 registry 屬性 phx-build 讀到 0（推論是沙盒）。
   外掛 0.3：不讀 phx-build；先開 F13V，打不開再開 N48N（Hello，build ≥ 135），log 會寫用了哪個。
 - 這次開機 SDMA 那行 `RLC_GPM_STAT=0x00140016`（上次開機 0x000c001a）：sdma.sh 解除 halt 後只等 1 秒就讀，可能太早；待查。
+
+### 外掛 0.3 上機（2026-11-24 21:0x）與 Safari 的沙盒
+
+- 外掛 0.3 在 com.apple.WebKit.GPU：`打不開 PhxBringup（F13V kr 0xe00002e2、N48N kr 0xe00002e2）`（kIOReturnNotPermitted）；
+  kernel：`Sandbox: com.apple.WebKit.GPU deny(1) iokit-open-service PhxBringup`（連 service 都不准開）。之後同一個 GPU 程序不再嘗試外掛。
+  21:17 的 Safari 播放（另一支影片 mSNBKBAp3wI，1080p30，125 dropped of 1350）是軟體解碼。
+- `com.apple.WebKit.GPUProcess.sb`（/System/Volumes/Preboot/Cryptexes/OS/System/Library/Frameworks/WebKit.framework/Versions/A/Resources/）第 220 行：
+  `(allow iokit-open-service (iokit-registry-entry-class "AppleVideoToolboxParavirtualizationDriver"))`；第 221–232 行：
+  user client `AppleVideoToolboxParavirtualizationUserClient` 放行，`ENABLE_SANDBOX_MESSAGE_FILTER` 為 YES 時只放行 iokit-method-number 0–4。
+- build 137：PhxBringup 底下掛子 service `AppleVideoToolboxParavirtualizationDriver`（property fw13-vcn-decode = true），newUserClient('F13V')
+  給同一個解碼 client；client 的解碼也接受 selector 0。外掛 0.4：先開子 service（selector 0），再 PhxBringup F13V（130），再 N48N（130），log 寫用了哪條。

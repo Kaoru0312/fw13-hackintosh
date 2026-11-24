@@ -26,7 +26,8 @@ typedef struct {
 struct H264Vcn {
    io_connect_t conn;
    int session_open;
-   int via_native;   // 1 = 用 N48N 開的（Safari 的 GPU 程序）
+   uint32_t sel;        // 解碼用的 selector（子 service 用 0、其他 130）
+   const char *path;    // 用哪條路開的（log 用）
    h264_params ps;
    int sps_id;
    h264_dpb dpb;
@@ -43,7 +44,7 @@ struct H264Vcn {
 static void seterr(H264Vcn *v, const char *m) { snprintf(v->err, sizeof v->err, "%s", m); }
 const char *h264vcn_last_error(const H264Vcn *v) { return v->err; }
 uint32_t h264vcn_last_vcn_us(const H264Vcn *v) { return v->vcn_us; }
-int h264vcn_via_native(const H264Vcn *v) { return v->via_native; }
+const char *h264vcn_path(const H264Vcn *v) { return v->path ? v->path : "?"; }
 void h264vcn_size(const H264Vcn *v, int32_t *w, int32_t *h)
 {
    *w = (int32_t)v->cw;
@@ -66,7 +67,7 @@ static int kcall(H264Vcn *v, int op, uint32_t msg_len, const void *msg, uint32_t
    n += bs_len;
    uint64_t in[5] = {(uint64_t)op, (uint64_t)(uintptr_t)v->inbuf, n, (uint64_t)(uintptr_t)out, outlen};
    uint32_t cnt = 4;
-   if (IOConnectCallScalarMethod(v->conn, SEL_FW13_VCN_DEC, in, 5, res, &cnt))
+   if (IOConnectCallScalarMethod(v->conn, v->sel, in, 5, res, &cnt))
       return -1;
    return (int)res[0];
 }
@@ -126,30 +127,43 @@ H264Vcn *h264vcn_create(const uint8_t *c, size_t len, int *why, char *msg, size_
    v->out = malloc(v->l.dt_size);
    if (!v->inbuf || !v->bs || !v->out) FAIL(H264VCN_MEMORY, "記憶體不足");
 
-   // 先開 'F13V'（AppleVideoToolboxParavirtualizationUserClient：VTDecoderXPCService 的沙盒放行）；
-   // 打不開再開 'N48N'（IOAccelPhxNativeClient＋Hello：Safari 的 com.apple.WebKit.GPU 沙盒放行，nullarc 的 Metal 也是用它）。
-   // 不讀 phx-build：2026-11-24 在 WebKit.GPU 裡讀 registry 屬性拿到 0（沙盒）；舊 kext 不認得 'F13V' 時 IOServiceOpen 會失敗、
-   // 'N48N' 的 selector 130 在 build 134 以上才有，更舊的會回 kIOReturnBadArgument → 建立 session 時報錯。
-   io_service_t svc = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("PhxBringup"));
-   if (!svc) FAIL(H264VCN_NOT_AVAILABLE, "找不到 PhxBringup");
-   kern_return_t kr = IOServiceOpen(svc, mach_task_self(), UC_TYPE, &v->conn), kr2 = 0;
-   if (kr) {
-      v->conn = IO_OBJECT_NULL;
-      kr2 = IOServiceOpen(svc, mach_task_self(), UC_TYPE_NATIVE, &v->conn);
-      if (!kr2) {
-         uint64_t hin[2] = {1, 0}, hout[4];
-         uint32_t hn = 4;
-         if (IOConnectCallScalarMethod(v->conn, SEL_HELLO, hin, 2, hout, &hn) || hout[1] < MIN_KEXT_BUILD_NATIVE) kr2 = kIOReturnUnsupported;
-      }
+   // 依序試三條路（2026-11-24 實測各程序的沙盒）：
+   //  1. 子 service AppleVideoToolboxParavirtualizationDriver（kext build 137）＋ 'F13V'、selector 0：Safari 的 com.apple.WebKit.GPU 只准開這個
+   //     service（deny iokit-open-service PhxBringup），訊息過濾開著時只准 method 0–4。
+   //  2. PhxBringup ＋ 'F13V'、selector 130：VTDecoderXPCService（build 136 起）。
+   //  3. PhxBringup ＋ 'N48N'（Hello）、selector 130：沒有沙盒的程序（build 135 起）。
+   // 不讀 phx-build：在 WebKit.GPU 裡讀 registry 屬性會被擋（讀到 0）。
+   kern_return_t kr1 = 1, kr2 = 1, kr3 = 1;
+   io_service_t nub = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleVideoToolboxParavirtualizationDriver"));
+   if (nub) {
+      kr1 = IOServiceOpen(nub, mach_task_self(), UC_TYPE, &v->conn);
+      IOObjectRelease(nub);
+      if (!kr1) { v->sel = 0; v->path = "子 service＋F13V"; }
    }
-   IOObjectRelease(svc);
-   if (kr && kr2) {
-      snprintf(msg, msglen, "打不開 PhxBringup（F13V kr 0x%x、N48N kr 0x%x）", kr, kr2);
+   if (kr1) {
+      v->conn = IO_OBJECT_NULL;
+      io_service_t svc = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("PhxBringup"));
+      if (!svc) FAIL(H264VCN_NOT_AVAILABLE, "找不到 PhxBringup");
+      kr2 = IOServiceOpen(svc, mach_task_self(), UC_TYPE, &v->conn);
+      if (!kr2) { v->sel = SEL_FW13_VCN_DEC; v->path = "PhxBringup＋F13V"; }
+      else {
+         v->conn = IO_OBJECT_NULL;
+         kr3 = IOServiceOpen(svc, mach_task_self(), UC_TYPE_NATIVE, &v->conn);
+         if (!kr3) {
+            uint64_t hin[2] = {1, 0}, hout[4];
+            uint32_t hn = 4;
+            if (IOConnectCallScalarMethod(v->conn, SEL_HELLO, hin, 2, hout, &hn) || hout[1] < MIN_KEXT_BUILD_NATIVE) kr3 = kIOReturnUnsupported;
+            else { v->sel = SEL_FW13_VCN_DEC; v->path = "PhxBringup＋N48N"; }
+         }
+      }
+      IOObjectRelease(svc);
+   }
+   if (kr1 && kr2 && kr3) {
+      snprintf(msg, msglen, "打不開解碼 client（子 service kr 0x%x、F13V kr 0x%x、N48N kr 0x%x）", kr1, kr2, kr3);
       *why = H264VCN_NOT_AVAILABLE;
       h264vcn_destroy(v);
       return NULL;
    }
-   v->via_native = kr != 0;
 
    v->handle = 0x46770000u | (__atomic_add_fetch(&g_handles, 1, __ATOMIC_RELAXED) & 0xffffu);
    uint32_t w[14];
