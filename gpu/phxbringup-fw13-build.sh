@@ -32,7 +32,7 @@ if [ "$UPTO" = 1 ] && [ -f "$REL" ]; then
   WANT=$(shasum -a 256 "$T" | cut -d' ' -f1)
   echo "== release + topology-patch.py：${WANT}"
   if [ "$GOT" = "$WANT" ]; then echo "✅ 逐 byte 相同：原始碼版拓撲表 = ESP 上現在用的二進位"; else
-    echo "✗ 不同：$(cmp -l "$BIN" "$T" | wc -l | tr -d ' ') bytes"; cmp -l "$BIN" "$T" | head -10; fi
+    python3 -I "$R/gpu/macho-cmp.py" "$BIN" "$T"; fi
   rm -f "$T"
 fi
 echo "輸出：$W/src/phxbringup/build/PhxBringup.kext"
