@@ -103,3 +103,20 @@ H.264 硬解只對「真的送 H.264 給 VideoToolbox」的播放有用。YouTub
   （t1 30 張、t2 30 張、t3 60 張、t4 40 張；最多 4 張參考、slot 最大 4）。`testdata/*.order` 是 ffprobe 的答案。
 - `vcnctl decodefile` 改成解整個檔：每張畫面依 DPB 狀態組 message、送 VCN、讀回輸出算 MD5，最後排成顯示順序跟 `.framemd5` 逐張比對。
   沒上機。t1–t4 用的 x264 參數有沒有產生 MMCO（adaptive marking），沒有確認；sliding window 一定有用到。
+
+## 第 3 步上機結果（2026-11-24 19:21，log `vcn/log-1124-192154.txt`）✅
+
+`vcn-test.sh --decfile t1 … t4`：四支串流**全部畫面跟 ffmpeg（libavcodec 軟體解碼）逐 byte 相同**：
+
+| 檔案 | 內容 | 畫面 | MD5 相同 | VCN 每張平均 |
+|---|---|---|---|---|
+| t1_ippp | Baseline、IPPP、1 張參考 | 30 | 30／30 | 0.73 ms |
+| t2_ibbp | High、IBBP、3 張參考、兩個 IDR | 30 | 30／30 | 1.12 ms |
+| t3_pyramid | High、B-pyramid、4 張參考、weighted pred | 60 | 60／60 | 1.03 ms |
+| t4_720p | High L4.0、1280×720、B 幀、4 張參考 | 40 | 40／40 | 1.46 ms |
+
+「VCN 每張平均」是送出 job 到 fence 寫回（每 0.2 ms 輪詢一次），不含使用者空間經除錯介面逐 dword 寫 VRAM 的時間。
+ring 繞回（WPTR 0xfc0 → 0）也正常。→ H.264 frame 解碼（I／P／B、sliding window、多參考、weighted prediction）在 FW13 的 VCN 4.0.2 上可用。
+
+還沒驗證：field／MBAFF（不支援，會拒絕）、MMCO（不確定測試檔有沒有用到）、長時間連續解碼、1080p 以上、解析度中途改變。
+下一步（第 4 步）：kext 解碼介面（取代除錯介面）＋ VideoToolbox 外掛。
