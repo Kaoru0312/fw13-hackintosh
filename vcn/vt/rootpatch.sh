@@ -20,10 +20,14 @@ BUNDLE=$HERE/build/H264VCNDecoder.bundle
 MODE=${1:-}; YES=${2:-}
 [ "$(id -u)" = 0 ] || { echo "請用 sudo 執行"; exit 1; }
 
-NODE=$(diskutil info / | awk -F': *' '/Device Node/{print $2}')
-SNAP=$(diskutil info / | awk -F': *' '/APFS Snapshot:/{print $2}')
+INFO=$(diskutil info /)
+NODE=$(awk -F': *' '/Device Node/{print $2}' <<<"$INFO")
+# Tahoe 的 diskutil info 用「This disk is an APFS Volume Snapshot.」和「APFS Snapshot Name:」（2026-11-24 實際輸出）
+SNAP=No; grep -q 'This disk is an APFS Volume Snapshot' <<<"$INFO" && SNAP=Yes
+SNAPNAME=$(awk -F': *' '/APFS Snapshot Name/{print $2}' <<<"$INFO")
+SEALED=$(awk -F': *' '/^ *Sealed/{print $2}' <<<"$INFO")
 VOL=$(echo "$NODE" | sed -E 's/s[0-9]+$//')
-echo "== 開機用的：${NODE}（APFS Snapshot: ${SNAP:-?}）"
+echo "== 開機用的：${NODE}（快照：${SNAP}，名稱 ${SNAPNAME:-?}，Sealed: ${SEALED:-?}）"
 echo "== 對應的系統磁碟區：${VOL}"
 echo "== authenticated-root：$(csrutil authenticated-root status | sed 's/.*: //')；FileVault：$(fdesetup status)"
 diskutil apfs listSnapshots "$VOL" 2>/dev/null | grep -E 'Name|XID|Purgeable|Limiting' | head -12
