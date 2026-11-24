@@ -95,4 +95,5 @@ repo 裡的 `nullarc-kext/phxbringup/PhxBringup.cpp` 跟 nullarc main `b787e24`�
 - 第 1 項（可重現）✅：`gpu/phxbringup-repro.sh` 在使用者 Mac（Apple clang 21.0.0，clang-2100.1.1.101）用 v0.4.0-alpha（9dd76b6）
   編出 sha256 `4a88035f…` = release，73256 bytes，逐 byte 相同。
 - 第 2 項（拓撲表進原始碼）：`nullarc-port/patches/phxbringup-v040-01-fw13-topology.patch` ＋ `gpu/phxbringup-fw13-build.sh 1`，
-  預期跟「release + topology-patch.py」逐 byte 相同。待上機。
+  ✅（2026-11-24）：sha `0160c54b…`，跟「release + topology-patch.py」（`6c947da7…`）只差 LC_UUID 的 16 bytes（offset 0x488–0x498，
+  連結器依內容算的 UUID；直接改二進位則保留舊 UUID），其餘逐 byte 相同（`gpu/macho-cmp.py`）。→ 原始碼版基底 = ESP 上現在跑的程式碼。
