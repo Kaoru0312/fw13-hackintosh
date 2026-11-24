@@ -52,3 +52,15 @@ H.264 硬解只對「真的送 H.264 給 VideoToolbox」的播放有用。YouTub
   有變就停止、什麼都不寫。這段 FW13 上有沒有別的用途：不知道，靠這個檢查把關。
 - 執行：`sudo bash /Users/kaoru/fw13-hackintosh/vcn/vcn-test.sh --dec`（check → 4 分鐘自動重開 watchdog → up → ringtest → ibtest → decodetest → down）。
   只在 Linux 用假的 Apple 標頭做過語法檢查，沒在 Mac 上編譯過。
+
+## 第一步結果（2026-11-24 12:49，log `vcn/log-1124-124918.txt`）✅
+
+`vcn-test.sh --dec`：up、ringtest、ibtest 都過；decodetest 的 VRAM 0xD000000–0xE008000 雜湊 3 秒內沒變，清 0 花 7.7 秒；
+建立 session（fence 0x31，3 ms）→ 解碼（fence 0x32，3 ms）→ 關閉 session（fence 0x33，1 ms）。
+**輸出 NV12 總和 0x020345d8 = 期望值**，非 0 位元組 622080 / 737280；feedback `0x2c 0x2c 0 1 0 1 …`。down 正常，WindowServer 正常。
+→ FW13 的 VCN 4.0.2 用 libdrm 的 buffer 配置與 IB 格式，能解出正確的 H.264 畫面。畫面存在使用者 Mac 的 `vcn/dec-1124-124926.nv12`
+（`vcn/nv12-to-pgm.py` 可轉成灰階圖看）。
+
+下一步（第 2 步）：自己組 decode message。從 libdrm 向量的 message（236 bytes）+ parameters（3344 bytes）對照 Mesa
+`radeon_vcn_dec.h` 的 `rvcn_dec_message_*` 結構，寫出「H.264 SPS／PPS／slice header → message」的產生器；先讓它對 libdrm 那張畫面產生
+**跟向量逐 byte 相同**的 message（不用上機就能驗證），再拿 mechrevo 的 `vcn_quadrants.h264`（160×128）等單張 IDR 上機解碼。

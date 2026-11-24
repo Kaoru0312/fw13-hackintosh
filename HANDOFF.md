@@ -28,6 +28,7 @@
 - **閒置功耗重量（2026-11-24 05:11–05:17，`power/idle-measure.sh`，結果檔 `power/idle-1124-051107.txt` 在使用者 Mac 上）**：插電、電池 100%、開機 7 分鐘、GPU 接管＋閘控開、GFXCLK 800 MHz。暖機後 60 筆：**平均 8.17 W、中位數 8.03 W**、最小 7.94 W、最大 9.65 W；C0 約 147‰；TC0P 47 → 44°C。有兩段約 15 秒的 9.5 W 突波（05:13:55–05:14:05、05:15:01–05:15:06），使用者說明是量測中途手動打開終端機視窗造成的，不是背景程序。對照：11-21/22 插電閒置約 10.3–11 W、gpucg 實驗基準 9.95 W → 閘控後穩定約 8.0 W；CachyOS 插電約 5.5 W，還差約 2.5 W。
 - GFXOFF 移植研究：`gpu/GFXOFF-PLAN.md`（階段 0 只讀 → 階段 1 SDMA 解除 halt → 階段 2 重編 PhxBringup，基底要用 v0.4.0-alpha 標籤而不是 repo 裡 b787e24 的原始碼）。
 - 硬解重新評估：`vcn/HWDEC-PLAN.md`（mechrevo 公開的 VCN patch 只到 build 67，解碼只有固定測試向量；build 75 的任意 H.264 解碼沒公開。先確認 YouTube 在 Safari 用哪個 codec）。
+- **硬解第 1 步通過（2026-11-24 12:49）**：`vcnctl decodetest` 從使用者空間解出 libdrm 的 864×480 H.264 畫面，NV12 總和 0x020345d8 正確（`vcn/log-1124-124918.txt`）。YouTube／Safari 用 `avc1.640028`。下一步：自己組 decode message（見 HWDEC-PLAN.md）。
 - **SDMA 解除 halt（GFXOFF 階段 1a，2026-11-24 05:24，執行期、重開機就恢復）**：RLC_GPM_STAT 回到 Linux 的 0x000c001a；閒置封裝中位數 8.03 → **7.27 W**（不同次開機比較，見 GFXOFF-PLAN.md）。上游 RX16 有 SDMA 運作時自己重開的紀錄，長時間穩定性觀察中；設回 halt：`sudo bash /Users/kaoru/fw13-hackintosh/gpu/sdma-test.sh --halt`。
 - `vcn/PHASE3.md` 的路線 D「不可行」要更正：ryzenstatus-utils 的文件寫 `/System/Library/Video/Plug-Ins` 的解碼器不檢查簽章（FW13 沒驗證）。
 
