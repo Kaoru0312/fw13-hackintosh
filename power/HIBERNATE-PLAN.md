@@ -1,7 +1,7 @@
 # 休眠（S4）計畫：FW13 移植 nullarc PR #20
 
 狀態：**走路線 C（2026-11-25）**：先不動 PhxAccel（保留 d9c4d407 的縮放），做 PhxBringup 138、PhxSleepPolicy、OpenCore；先測「開機能不能從休眠映像還原」（可以在 GPU 接管關閉時測）。
-目前：**第 2 步完成**（PhxBringup build 138 已裝，2026-11-25 04:05 開機）；**第 3 步**（PhxSleepPolicy＋OpenCore）腳本寫好，還沒執行。
+目前：**第 2、3 步完成**（2026-11-25 04:12）；**第 5 步第一次測試**的開關 `power/hib-test.sh` 寫好，還沒執行。
 
 ## 為什麼是休眠
 
@@ -157,3 +157,16 @@
   - `debug.phxsleep_installed`：1 = 搶到睡眠政策；-1 = 別人先註冊（那就要把它移到 Lilu 後面）。
   - `IOSleepSupported`：BootFBSleep 停用後如果變成沒有／No → macOS 下真的沒有 `_S3`，要加 SSDT-S3；還是 Yes → `_S3` 存在，不用 SSDT。
     這樣就能回答 `_S3` 的問題，不用到 CachyOS 查。
+- **第 3 步結果（2026-11-25 04:12 開機）**：`debug.phxsleep_installed = 1`（放在 Kernel.Add 最後也搶得到）、`phxsleep_ecreg = 1`、`_last = 0`；
+  `IOSleepSupported = Yes`（BootFBSleep 已停用）→ 推論 macOS 下 `_S3` 存在，**不需要 SSDT-S3**；boot-args 沒有 `acpi=`；載入的只有 PhxSleepPolicy。
+
+## 第 5 步：第一次休眠測試（只看「能不能從映像還原」）
+
+- 為什麼不在 GPU 關閉時測：PR #20 寫「GPU 關閉（phxboot-off）時開機 framebuffer `.Display_boot` 會擋住系統睡眠」，pmset 紀錄裡也看過
+  `Kernel System sleep preventers: .Display_boot`（先前 BootFBSleep 就是在掛 `updatePreventSystemSleepList` 忽略它）。所以在 GPU 開著時測。
+- 預期：PhxAccel 還沒有 phxfb_wake／nvaccelfb=9，也還沒有 phxwaked → 還原成功的話畫面大概黑的（WindowServer 卡在 IOFramebuffer 的 gate，
+  PR #20 說最後被 watchdog panic）。判斷有沒有還原，看強制重開後的紀錄：pmset log 有沒有 Wake／HibernateStats、上一次開機的 kernel log
+  有沒有 `PhxBringup: wake: waiting for the bring-up…`、`PhxSleepPolicy` 有沒有寫金鑰（`phx-sleep-note` NVRAM）。
+- 喚醒時 systemd-boot 預設是 CachyOS（`LoaderEntryDefault = linux-cachyos-lts.conf`），**要在 3 秒內手動選 macOS（OpenCore）**；選錯了開進 CachyOS 也沒關係，
+  映像只有 boot.efi 會讀，下次選 macOS 會再試著還原（或丟掉映像正常開機）。
+- 風險：MT7922 在睡眠中途失敗後可能要完全斷電（關機、拔電、按住電源 20 秒）才恢復。
