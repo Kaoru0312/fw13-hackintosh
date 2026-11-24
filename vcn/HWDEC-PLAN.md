@@ -142,3 +142,18 @@ ring 繞回（WPTR 0xfc0 → 0）也正常。→ H.264 frame 解碼（I／P／B�
 build 135（補丁 02 更新）：輸出改從 carve-out 的系統記憶體位址讀（`IODeviceMemory::withRange(fbPhys + 位移)`，write-back 映射，
 同 PhxAMDFB aliasMap 的作法）；VCN 寫 DRAM 不經 CPU cache，所以讀之前對那段做 clflush（CPU 不寫那段，沒有 dirty line）。
 建立 session 時先用 BAR 寫記號、確認 alias 讀得到才採用，否則退回 BAR。kdec 會印「讀回路徑」。
+
+### 第 4 步上機結果：build 135（2026-11-24 19:54）✅
+
+讀回路徑走 carve-out 系統記憶體（alias 檢查通過）。t1–t4 共 160 張 MD5 全部相同（clflush 之後讀到的確實是 VCN 寫的內容）。
+
+| 檔案 | VCN 每張 | 整體每張（kext 搬資料＋讀回＋user MD5） | build 134 整體 |
+|---|---|---|---|
+| t1 320×240 | 0.37 ms | 0.77 ms（1300 fps） | 23.04 ms |
+| t2 320×240 | 1.60 ms | 1.99 ms（502 fps） | 27.49 ms |
+| t3 320×240 | 0.93 ms | 1.31 ms（763 fps） | 28.10 ms |
+| t4 1280×720 | 1.13 ms | **4.22 ms（237 fps）** | 208.21 ms |
+
+→ 720p 整體快了約 49 倍，單路 30／60 fps 的餘裕很大。
+下一個測試檔 `t5_1080p.h264`（1920×1080，High L4.0、4 張參考、B 幀，SPS 有 frame cropping 下方 8 行，解碼 1920×1088、dt_pitch 2048）：
+主機端模擬顯示順序跟 ffprobe 一致；已加進 kdec-test.sh。

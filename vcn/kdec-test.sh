@@ -20,7 +20,7 @@ WD=$(bash -c 'nohup shutdown -r +4 </dev/null >/dev/null 2>&1 & echo $!')
 RES=1
 if [ $UP = 0 ]; then
   RES=0
-  for t in t1_ippp t2_ibbp t3_pyramid t4_720p; do
+  for t in t1_ippp t2_ibbp t3_pyramid t4_720p t5_1080p; do
     sudo -u "$U" "$HERE/kdec" "$HERE/h264/testdata/$t.h264" "$HERE/h264/testdata/$t.framemd5" "$@" || RES=1
   done
 else
