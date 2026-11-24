@@ -1,0 +1,66 @@
+# 休眠（S4）計畫：FW13 移植 nullarc PR #20
+
+狀態：**第 0 步（只讀檢查）**，還沒改任何東西。
+
+## 為什麼是休眠
+
+- FW13 沒有 S3：CachyOS `/sys/power/mem_sleep` = `[s2idle]`；DSDT 的 `_S3` 只在 `CNSB == 0 && DAS3 == 1` 時才定義（HANDOFF「睡眠與硬體解碼：可行性評估」）。
+- macOS x86 只會 S3，不支援 s2idle。能做的只有休眠：記憶體寫進磁碟 → 斷電 → 開機時還原。
+- 喚醒＝冷開機（韌體 → systemd-boot → OpenCore → boot.efi 還原映像），要按電源鍵。休眠期間耗電接近關機。
+
+## 來源
+
+- nullarc PR #20（open，github.com/luuumi-dev/nullarc/pull/20）。base 是 `8aba872`（v0.4.0-alpha 之後 3 個 commit，
+  都只動 README、Makefile、tests，**沒動 kext 原始碼**），所以 PhxBringup 的部分可以直接疊在我們的 v040 補丁上。
+  commit：`0aedfd3`（GPU 恢復）、`63feca1`（PhxSleepPolicy + docs/SLEEP.md）、`1952bd3`、`8a2d943`／`6b930e0`（EC `_REG`）、
+  `d424456`（phxwake：開機選單一次性跳過）。
+- 作者在 MECHREVO WUJIE15XA（8745HS／780M、macOS 26.7）驗證：選單或闔上螢幕進入休眠，按電源鍵喚醒，kernel 恢復後約 2 秒桌面回來。
+  **FW13 上沒有人驗證過。**
+
+## PR #20 的各個部分，FW13 要怎麼處理
+
+| 部分 | PR #20 | FW13 |
+|---|---|---|
+| ACPI `_S3` | DSDT 改名 `XS3_` → `_S3_`（沒有 `_S3`，macOS 回報「不支援睡眠」） | FW13 沒有 `XS3`，`_S3` 是條件式定義。改寫 SSDT：只在 Darwin 下、`\_S3` 不存在時建立（參考 660m-Metal `dist/acpi/SSDT-S3.dsl`）。**要先確認** macOS 下 `_S3` 到底在不在（第 0 步）。S3 本身永遠不會進入（PhxSleepPolicy 只回答「休眠」或「取消」）。 |
+| PhxSleepPolicy.kext | 搶先註冊睡眠政策：開了休眠就回答 hibernate、否則 abort；把 `IOHibernateRTCVariables` 抄進 NVRAM；開機和每次喚醒跑 EC `_REG(3, 1)` | 從原始碼編（`src/sleeppolicy`，181 行）。EC `_REG`：FW13 的 EC 喚醒後會不會失去 ACPI 模式：**不知道**；先保留，boot-arg `-phxsleepnoecreg` 可以關掉開機時那次。 |
+| OpenCore | `Misc → Boot → HibernateMode = Auto`、`HibernateSkipsPicker = true`；Kernel.Add 緊接 Lilu 之後放 PhxSleepPolicy | 一樣。照 HANDOFF 規則：備份 → 副本模擬 → diff → CachyOS 還原指令。 |
+| pmset | `hibernatemode 25 standby 0 autopoweroff 0 powernap 0` | 目前 `disablesleep 1`（HANDOFF 表格）。最後一步才打開。 |
+| boot-args | 文件寫：帶 `-v` 或 `debug=0x100` 時進入睡眠會卡住 | FW13 現在兩個都有，測試前要拿掉（`keepsyms=1` 可留）。 |
+| PhxBringup | 睡眠時等 GPU 做完、擋住新的送出；喚醒後重新 adopt queue 才放行；丟掉舊的 VMID 綁定；hang check 暫停 | 做成 `phxbringup-v040-03-hibernate.patch` 疊在 01／02 上。**另外要處理我們自己的 VCN**：喚醒後 VCN 斷過電、VRAM（carve-out）內容沒了，`fw13VcnRingOk()` 會讀到重置值 → 回 NOT_UP，外掛退回軟體解碼。舊的 decode session（context 在 VRAM）要作廢：睡眠時把所有 session 標成失效，喚醒後同一個 handle 回 NO_SESSION。 |
+| PhxAccel（PhxAMDFB + NMXAccel） | `debug.phxfb_wake=1` 打開 IOFramebuffer 的 paging gate；`debug.nvaccelfb=9` 補上沒收到的 display_mode_did_change、重新 enable accelerator | 我們的 `phxaccel-port` 不是 v0.4.0 原始碼（來自 nullarc 之後的 main，有 HiDPI、HDMI head 等改動），PR 的補丁直接套不上（`phxfb.cpp:410` 衝突）→ 手動移植 53 行。`resumeDisplay()` 用到 NMXAccel 物件內的固定位移（`+0x10c`、`+0xc78`），要確認我們這版一樣（`reportPipeGates` 已經用 `+0xc78`）。 |
+| phxwaked + phxwake.sh | LaunchDaemon：每次喚醒後若 `GRBM_STATUS` = 0 就重跑 bring-up（`full.sh kiqsched`），再 phxfb_wake、nvaccelfb=9、時脈上限、clock gating | 照 FW13 的 phxboot.sh 補齊：時脈上限 `0x1B 800`＋`0x1E 800`、gpucg、sdma、`vcnctl up`。各自的關閉開關照舊（`gpucg-off`、`sdma-off`、`vcn-off`）。 |
+| phxresume.py（開機選單一次性跳過） | 有 Boot Loader Interface 的選單（systemd-boot、Limine）：睡眠時寫 `LoaderEntryOneShot` = 這次 macOS 的 entry、`LoaderConfigTimeoutOneShot` = `menu-disabled` | FW13 是 systemd-boot → OpenCore，正好是 `bli` 模式。不做的話每次喚醒要在 systemd-boot 手動選 macOS（3 秒內），也能用，所以排在最後。一次性變數用過就被 systemd-boot 刪掉，**不影響 CachyOS 平常開機**。 |
+
+## 另外發現：PhxAccel 裡的 Firebat EC 程式碼（跟休眠無關，但這次重編要一起處理）
+
+`phxaccel-port/accel/nvrm-accel.cpp` 從本 repo 第一個 commit 起就帶著 nullarc main `1e0dbe9`（"add EC fan quiet mode … sysctl to PhxAccel"）
+加的 Firebat U6C 專用程式碼，**沒有判斷機型**：
+
+- `start()`（第 692 行）：`ml_io_map(0xFE0B0400, 0x100)`，寫 `+0x04 = 1`、`+0x18 = 0`、`+0x32 = 0x82`。
+- `armFanWorker()` → `fanWorker()`（第 1352 行）：**每秒**寫 `+0x04`、`+0x17`、`+0x18`，依 `+0x70` 的值寫 `+0x74`、`+0x76`。
+- sysctl `debug.firebat_fan_mode`：讀寫同一塊。
+
+這些位移是 Firebat 的 EC 記憶體視窗。FW13 在實體位址 0xFE0B0400 有沒有東西、是什麼：**不知道**（要查 CachyOS 的 `/proc/iomem` 和 DSDT）。
+目前裝的 PhxAccel（vblfix，sha `8938cdb4`）是這份原始碼編的，所以這段應該一直在跑；機器到目前穩定，風扇由 EC 控制也正常，
+但對不明位址每秒寫入不應該留著。打算：重編 PhxAccel 時用 `#ifdef PHX_FIREBAT_EC` 包起來，FW13 不編進去。
+
+## 步驟（每一步各自可以退回）
+
+0. **只讀檢查**（`power/hib-check.sh`＋CachyOS 兩個指令）：macOS 下系統睡眠是否被當成「不支援」、記憶體／磁碟、
+   systemd-boot BLI 變數 macOS 讀不讀得到、OpenCore 相關欄位、Firebat 程式碼有沒有跑；CachyOS：`dmesg` 的 ACPI 支援睡眠狀態列表、
+   DSDT 的 `_S3` 區塊、0xFE0B0400 在 `/proc/iomem` 是什麼。
+1. **PhxAccel 重編**：拿掉 Firebat EC、加上 PR #20 的 phxfb_wake／nvaccelfb=9。只換 kext，行為在沒睡眠時不變 → 先裝、用一陣子。
+2. **PhxBringup build 138**：`phxbringup-v040-03-hibernate.patch`（PR #20 的 PhxBringup 部分＋VCN session 作廢）。沒睡眠時行為不變 → 先裝、用一陣子。
+3. **PhxSleepPolicy.kext＋SSDT-S3＋OpenCore 欄位**：只放進 ESP，pmset 仍然 `disablesleep 1` → 不會真的睡。確認 `debug.phxsleep_installed = 1`、開機正常、CachyOS 正常。
+4. **phxwaked**：裝 LaunchDaemon（只在喚醒時動作）。
+5. **第一次休眠測試**：拿掉 `-v`、`debug=0x100`；`pmset hibernatemode 25 …`、`disablesleep 0`；手動 `pmset sleepnow`，按電源鍵、在 systemd-boot 選 macOS。
+   失敗時的退路：開機選 CachyOS 一定能進（休眠映像只有 boot.efi 會讀）；macOS 那邊 `pmset -a disablesleep 1` 回到現狀。
+6. 闔上螢幕觸發休眠；phxresume `bli` 跳過選單。
+
+## 風險
+
+- 睡眠中途失敗：PR #20 記錄 MT7922 Wi-Fi／藍牙可能要完全斷電（關機、拔電源、按住電源鍵 20 秒）才會恢復。FW13 的網卡型號在第 0 步確認。
+- 休眠映像寫在 APFS（`/private/var/vm/sleepimage`，大小約等於記憶體），磁碟要夠。
+- 喚醒後 GPU 沒回來：PR #20 的 kext 修改讓 WindowServer 等在 IOFramebuffer 的 gate、Metal client 等在 `gpuSubmit()`；phxwake.sh 失敗的話畫面不會回來，只能強制關機。
+  強制關機後是一般冷開機，phxboot 照常跑。
+- 喚醒後 phxboot 的 `MARK` 檔不會被碰到（phxwake.sh 不用它），所以失敗的喚醒不會讓下次開機把 GPU 關掉；要不要也加一個「喚醒失敗兩次就停用休眠」的保護，第 4 步再決定。
