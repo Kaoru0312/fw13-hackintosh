@@ -54,6 +54,7 @@ vcn/fw/
 vcn/ref/
 vcn/vcnctl
 vcn/kdec
+vcn/vt/build/
 vcn/phase3/vtprobe
 
 # VCN 解碼測試輸出的原始畫面

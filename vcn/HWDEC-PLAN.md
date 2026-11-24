@@ -166,3 +166,17 @@ build 135（補丁 02 更新）：輸出改從 carve-out 的系統記憶體位�
 `vcnctl up` 之後（沒有解碼）量 6 分鐘：暖機後 59 筆中位數 **7.11 W**、平均 7.49 W（20:02:10–15 兩筆約 18 W 的突波拉高平均，來源沒記到）、最小 6.69 W。
 對照 VCN 沒開（SDMA 實驗那次，05:27）中位數 7.27 W → 沒有看得出的增加（VCN 啟動時開了動態電源閘控，`UVD_POWER_STATUS` 0x105）。
 兩次是不同次開機，差異在雜訊範圍內。→ 開機自動 `vcnctl up` 不會增加閒置耗電：`gpu/vcn-boot-install.sh`。
+
+## 第 5 步：VideoToolbox 外掛（2026-11-24，寫好、未編譯、未上機）
+
+- `vcn/vt/h264vcn.[ch]`：一個解碼 session。讀 avcC（ISO/IEC 14496-15）的 SPS／PPS、長度前綴 NAL → parser＋DPB＋message →
+  PhxBringup selector 130（build ≥ 135）→ 複製到 CVPixelBuffer（NV12 video range、IOSurface，裁切後尺寸）。
+  不支援的（field／MBAFF、非 8-bit 4:2:0、Baseline／Main／High 以外、超出 kext 的 48 MiB 區）回 UNSUPPORTED；
+  kext 太舊／VCN 沒帶起來／別的 session 正在用回 NOT_AVAILABLE → VideoToolbox 改用軟體解碼器。
+- `vcn/vt/H264VCNDecoder.c`：改寫自 ryzenstatus-utils 的 AV1VCNDecoder.c（MIT）。外掛 SPI、State 參考計數、invalidate／finalize、
+  serial decode queue 照抄；解碼換成 h264vcn；加上 kVTDecodeFrame_EnableTemporalProcessing 時的顯示順序重排
+  （依 group／POC，深度 = SPS max_num_ref_frames，遇到新的 IDR 群組先把前一群全部交出；finishDelayedFrames／invalidate 時全部交出）。
+- `vcn/vt/Info.plist`（CMClassImplementations：avc1、VTIsHardwareAccelerated）、`build.sh`、`install.sh`（裝到 /System/Library/Video/Plug-Ins，寫不進去就停）。
+- `vcn/vt/vttest.c`：用系統的 VTDecompressionSession 解檔，`--hw` 要求硬體、`--sw` 只用軟體、`--temporal` 要求顯示順序輸出，
+  印 UsingHardwareAcceleratedVideoDecoder、輸出順序、每張時間，並跟 .framemd5 比對。
+- 只有 h264vcn.c 在 Linux 用假標頭做過語法檢查（只缺 IO_OBJECT_NULL 這個假標頭沒定義的常數）；CoreMedia／VideoToolbox 的部分要在 Mac 上編譯才知道。
