@@ -1,6 +1,6 @@
 # 休眠（S4）計畫：FW13 移植 nullarc PR #20
 
-狀態：**第 0 步（只讀檢查）**，還沒改任何東西。
+狀態：**第 0 步 macOS 部分已完成（2026-11-24 21:56）**，還沒改任何東西。CachyOS 部分還沒做。
 
 ## 為什麼是休眠
 
@@ -64,3 +64,29 @@
 - 喚醒後 GPU 沒回來：PR #20 的 kext 修改讓 WindowServer 等在 IOFramebuffer 的 gate、Metal client 等在 `gpuSubmit()`；phxwake.sh 失敗的話畫面不會回來，只能強制關機。
   強制關機後是一般冷開機，phxboot 照常跑。
 - 喚醒後 phxboot 的 `MARK` 檔不會被碰到（phxwake.sh 不用它），所以失敗的喚醒不會讓下次開機把 GPU 關掉；要不要也加一個「喚醒失敗兩次就停用休眠」的保護，第 4 步再決定。
+
+## 第 0 步結果（macOS，2026-11-24 21:56，`power/hib-check-1124-215605.txt` 在 Mac 上）
+
+- **`IOSleepSupported = Yes`**、Supported Features 有 `Hibernation`、`DeepSleep`。PR #20 說沒有 `_S3` 時平台會回報不支援睡眠；
+  這裡是支援 → 推論 macOS 下 `_S3` 存在（`CNSB == 0 && DAS3 == 1` 成立），**SSDT-S3 可能不需要**。等 CachyOS 的 dmesg 再確認。
+  （HANDOFF 記的「S3 醒不來」也符合：當時真的進了 S3。）
+- `SleepDisabled = Yes`、AC `hibernatemode 0`、電池 `hibernatemode 3`。
+- 記憶體 32768 MiB；Data 磁碟剩 108 GiB；`/private/var/vm` 是空的（還沒有 sleepimage）。
+- NVRAM：macOS **讀得到** systemd-boot 的 Boot Loader Interface 變數：`LoaderInfo = systemd-boot 262.1-1-arch`、
+  `LoaderEntrySelected = opencore.conf`、`LoaderEntryDefault = linux-cachyos-lts.conf` → phxresume `bli` 模式可用，entry 是 `opencore.conf`。
+- OpenCore：`HibernateMode = NVRAM`（已經不是 None）、`HibernateSkipsPicker = false`、`ShowPicker = true`、Timeout 3、
+  `DiscardHibernateMap = false`、`RequestBootVarRouting = true`（`bli` 模式不受影響）、`WriteFlash = true`。
+  Kernel.Add：[0] Lilu、[37] PhxBringup、**[47] HibernationFixup（啟用）**、**[48] BootFBSleep（啟用）**，共 50 筆。
+  PR #20：HibernationFixup 1.5.4 在 26.7 沒存到金鑰，有 PhxSleepPolicy 就不需要。兩個都抄同一個金鑰，第 3 步打算停用 HibernationFixup。
+- **Firebat EC 程式碼確實在跑**：21:28:55 `Firebat EC init … FCMO=0xff`、`fan regulator armed`。讀回 0xff 通常表示那個位址沒有裝置回應
+  （推論，未證實），所以寫入可能沒有作用；仍然要拿掉。
+- 網卡：MT7922（0x14C3:0xE616，itlwm）→ PR #20 記錄的「睡眠失敗後要完全斷電」風險適用。
+- boot-args 現在是 `… -smbtlefix acpi=0x200000`：`-v`、`debug=0x100` 都在（第 5 步前要拿掉）。
+
+### repo 裡沒有紀錄、要先問使用者的
+
+- **PhxAccel sha `d9c4d407`**：HANDOFF 記的是 vblfix `8938cdb4`。不知道 `d9c4d407` 是哪份原始碼編的。第 1 步要從原始碼重編 PhxAccel，
+  base 不對會把現有的修改弄丟。
+- **`BootFBSleep.kext`**（Kernel.Add [48]，ESP 上有 `.bak-1122f` 到 `.bak-1123a` 七個備份）：做什麼的、原始碼在哪，不知道。名字跟睡眠有關，
+  可能跟 PhxSleepPolicy／phxfb_wake 重疊。
+- **boot-arg `acpi=0x200000`**：HANDOFF 的 boot-args 沒有它。用途不知道。
