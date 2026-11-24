@@ -217,3 +217,15 @@ build 135（補丁 02 更新）：輸出改從 carve-out 的系統記憶體位�
   user client `AppleVideoToolboxParavirtualizationUserClient` 放行，`ENABLE_SANDBOX_MESSAGE_FILTER` 為 YES 時只放行 iokit-method-number 0–4。
 - build 137：PhxBringup 底下掛子 service `AppleVideoToolboxParavirtualizationDriver`（property fw13-vcn-decode = true），newUserClient('F13V')
   給同一個解碼 client；client 的解碼也接受 selector 0。外掛 0.4：先開子 service（selector 0），再 PhxBringup F13V（130），再 N48N（130），log 寫用了哪條。
+
+### build 137 ＋ 外掛 0.4 上機（2026-11-24 21:29–21:45）：Safari 仍被擋，暫停
+
+- 子 service 存在（ioreg：AppleVideoToolboxParavirtualizationDriver，fw13-vcn-decode = Yes），但 com.apple.WebKit.GPU 開它一樣被拒：
+  `Sandbox: com.apple.WebKit.GPU deny(1) iokit-open-service AppleVideoToolboxParavirtualizationDriver`（21:29:35 登入時 Safari 自動播放、
+  21:45:30 VCN 已帶起來、重開 Safari 之後都一樣），外掛三條路都是 kIOReturnNotPermitted，Safari 退回軟體解碼
+  （mSNBKBAp3wI 1080p30：4844 dropped of 14686，約 33%）。
+- 檔案裡第 220 行明明是 allow，而且整份檔案沒有任何 deny iokit-open-service 會蓋掉它（grep 結果只有 allow）。
+  推論：WebKit 實際套用的不是 Resources 裡這份文字檔（可能是編譯進程式的版本、或參數不同），或 registry-entry-class 的比對方式跟想的不一樣。不知道是哪個。
+- 決定：Safari 這條路先停（試了三輪、每輪都要重開機，看不到實際生效的規則）。
+- 目前狀態：系統 VideoToolbox 在 VTDecoderXPCService 裡能用 VCN（bit-exact）；Safari 會建立外掛、失敗、自動退回軟體解碼（不會比原本差）。
+  外掛 VTRating 300 讓系統每次先試它；失敗時立刻回報 NotAvailable。
