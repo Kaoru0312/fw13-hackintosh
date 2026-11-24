@@ -1,0 +1,21 @@
+--- a/src/amd/phx_topology.h	2026-11-24 11:28:33.522975389 +0000
++++ b/src/amd/phx_topology.h	2026-11-24 11:28:33.553063550 +0000
+@@ -62,12 +62,15 @@
+ }
+ 
+ /* Default topologies for Phoenix family */
++/* [fw13] FW13 760M（1002:15bf rev cb，subsystem f111:0006）的實測拓撲（gpu-topology/fw13-760m.json，CachyOS amdgpu
++ * AMDGPU_INFO_DEV_INFO，2026-11-21）：8 CU、cu_bitmap 0x3c／0x33、RB 遮罩 0x5。跟 gpu/topology-patch.py 改 release 二進位的
++ * 128 bytes 相同；phx_find_topology() 對 HP 以外的 15bf 都回傳這張表。 */
+ static const struct phx_topology g_phx_780m_default = {
+     PHX_TOPOLOGY_VERSION, PHX_TOPOLOGY_CAPTURED | PHX_TOPOLOGY_RUNTIME_READY,
+-    0x1002u, 0x1900u, 0xc8u, 0x0u, 0x0u,
+-    1u, 2u, 6u, 4u, 0xfu, 12u,
++    0x1002u, 0x15bfu, 0xcbu, 0xf111u, 0x6u,
++    1u, 2u, 6u, 4u, 0x5u, 8u,
+     {
+-        {0x3fu, 0x3fu, 0x0u, 0x0u},
++        {0x3cu, 0x33u, 0x0u, 0x0u},
+         {0x0u, 0x0u, 0x0u, 0x0u},
+         {0x0u, 0x0u, 0x0u, 0x0u},
+         {0x0u, 0x0u, 0x0u, 0x0u}
