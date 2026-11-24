@@ -90,3 +90,10 @@
 - **`BootFBSleep.kext`**（Kernel.Add [48]，ESP 上有 `.bak-1122f` 到 `.bak-1123a` 七個備份）：做什麼的、原始碼在哪，不知道。名字跟睡眠有關，
   可能跟 PhxSleepPolicy／phxfb_wake 重疊。
 - **boot-arg `acpi=0x200000`**：HANDOFF 的 boot-args 沒有它。用途不知道。
+
+### 追查（2026-11-24 22:0x）
+
+- 裝著的 PhxAccel：`/Library/Extensions/PhxAccel.kext` 二進位時間 **11-23 03:44**（387008 bytes），比 vblfix（`backup/PhxAccel-vblfix.kext`，11-22 05:12）晚。
+  → 11-23 03:44 有人換過 PhxAccel，安裝時把 vblfix 備份起來。repo（含 git 歷史、origin/main）沒有這次的紀錄。
+- `BootFBSleep` 原始碼在 Mac 上的 `power/bootfbsleep/`，**沒進 repo**（不是 gitignore 擋的，是沒 commit）。
+- 推論：11-22～11-23 有另一段工作只留在 Mac 上，沒推。要看 Mac 上的 `git status`。
