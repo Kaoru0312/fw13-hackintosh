@@ -120,3 +120,15 @@ ring 繞回（WPTR 0xfc0 → 0）也正常。→ H.264 frame 解碼（I／P／B�
 
 還沒驗證：field／MBAFF（不支援，會拒絕）、MMCO（不確定測試檔有沒有用到）、長時間連續解碼、1080p 以上、解析度中途改變。
 下一步（第 4 步）：kext 解碼介面（取代除錯介面）＋ VideoToolbox 外掛。
+
+## 第 4 步：kext 解碼介面（2026-11-24，寫好、未上機）
+
+- `nullarc-port/patches/phxbringup-v040-02-fw13-vcn-decode.patch`（約 300 行，套在 01 之後）：PhxBringup 新增
+  `PHXN_SEL_FW13_VCN_DEC`（130），一般 client（Hello 之後）就能用，不需 root／phxdebug。流程跟 vcnctl decodefile 一樣
+  （同一個 ring、fence、IB 位置；buffer 從 +0x0D000000 起，bitstream 固定 4 MiB 上限）；kext 直接寫 BAR（不再逐 dword 呼叫），
+  等 fence（前 2 ms 忙等、之後 IOSleep，2 秒逾時），解碼後把 NV12 複製回 user buffer。一次只允許一個 session；
+  client 關掉時 kext 補送 destroy。`PHX_KEXT_BUILD` 改成 134。用 MacKernelSDK（acidanthera，GitHub HEAD）做過語法檢查，沒有錯誤。
+- VCN 的帶起（韌體、上電、DPG、ring）還是 root 的 `vcnctl up`，kext 只檢查 ring 在預期位置（RB_ENABLE、RB_BASE、RB_SIZE）。
+- `vcn/kdec.c`：一般使用者執行，解整個檔並跟 `.framemd5` 比對、印 VCN 時間與整體每張時間。`vcn/kdec-test.sh`：up → kdec t1–t4 → down。
+- 安裝：`gpu/phxbringup-fw13-build.sh`（全部補丁）→ `gpu/phxbringup-install.sh`（只換 ESP 上的二進位，備份 EFI/OC/PhxBringup.kext.bak-fw13-<時間>）。
+- 編譯：`clang -O2 -Wall -framework IOKit -framework CoreFoundation vcn/kdec.c vcn/h264/h264_parse.c vcn/h264/vcn_h264_msg.c vcn/h264/h264_dpb.c vcn/h264/h264_stream.c vcn/h264/md5.c -o vcn/kdec`

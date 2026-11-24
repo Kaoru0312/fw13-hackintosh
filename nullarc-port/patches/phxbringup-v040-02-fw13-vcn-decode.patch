@@ -1,0 +1,370 @@
+diff -ruN a/src/phxbringup/PhxBringup.cpp b/src/phxbringup/PhxBringup.cpp
+--- a/src/phxbringup/PhxBringup.cpp	2026-11-24 11:36:07.331867213 +0000
++++ b/src/phxbringup/PhxBringup.cpp	2026-11-24 11:36:07.334102922 +0000
+@@ -24,7 +24,7 @@
+ 
+ #include "PhxNativeABI.h"
+ 
+-#define PHX_KEXT_BUILD 34u
++#define PHX_KEXT_BUILD 134u   // [fw13] 34 = v0.4.0；134 = FW13 版（拓撲表＋VCN 解碼介面）
+ 
+ // debug.phxbos_flush: how a client's BOs are made coherent around each submission and each completed wait.
+ // 2 = clflush every line (the bring-up way), 1 = clflushopt (the same lines, pipelined), 0 = none (the GPU maps system
+@@ -116,6 +116,9 @@
+     IOReturn gpuSubmit(uint32_t vmid, bool gfx, const uint64_t *ibVa, const uint32_t *ibDw, uint32_t n, uint64_t *seq);
+     uint64_t gpuRetired() const;
+     const phx_topology *capturedTopology() const { return topology; }
++    // [fw13] VCN 解碼（PHXN_SEL_FW13_VCN_DEC）。client 是 opaque 指標，只用來判斷擁有者。
++    IOReturn fw13VcnDec(void *client, task_t task, const uint64_t in[5], uint64_t out[4]);
++    void fw13VcnRelease(void *client);
+     IOReturn setPowerState(unsigned long ordinal, IOService *whichDevice) override;
+ 
+ private:
+@@ -129,6 +132,15 @@
+     void clearRing();
+ 
+     const phx_topology *topology{nullptr};
++    // [fw13] VCN 解碼狀態
++    IOLock *fw13VcnLock{nullptr};
++    void *fw13VcnOwner{nullptr};
++    uint32_t fw13VcnHandle{0}, fw13VcnSeq{0x10000};
++    uint32_t fw13VcnDpb{0}, fw13VcnCtx{0}, fw13VcnDt{0};
++    bool fw13VcnRingOk() const;
++    uint32_t fw13VcnSubmit(bool frame, uint32_t *usOut);
++    void fw13VcnBarWrite(uint32_t off, const void *src, uint32_t bytes);
++    void fw13VcnBarZero(uint32_t off, uint32_t bytes);
+     bool isSleeping{false};
+     IOPCIDevice *pci{nullptr};
+     IOMemoryMap *mmio{nullptr};
+@@ -245,6 +257,7 @@
+     IOReturn doQueryInfo(IOExternalMethodArguments *a);
+     IOReturn doTopology(IOExternalMethodArguments *a);
+     IOReturn doReadRegs(IOExternalMethodArguments *a);
++    IOReturn doFw13VcnDec(IOExternalMethodArguments *a);
+     IOReturn doBoCreate(IOExternalMethodArguments *a);
+     IOReturn doBoFree(IOExternalMethodArguments *a);
+     IOReturn doBoImportHost(IOExternalMethodArguments *a);
+@@ -342,6 +355,7 @@
+     doorbellMap = pci->mapDeviceMemoryWithRegister(kIOPCIConfigBaseAddress2);
+     smuLock = IOLockAlloc();
+     gpuLock = IOLockAlloc();
++    fw13VcnLock = IOLockAlloc();
+     uint32_t dbg = 0;
+     debug = PE_parse_boot_argn("phxdebug", &dbg, sizeof(dbg)) && dbg == 1;
+     if (mmio) {
+@@ -406,6 +420,10 @@
+         IOLockFree(gpuLock);
+         gpuLock = nullptr;
+     }
++    if (fw13VcnLock) {
++        IOLockFree(fw13VcnLock);
++        fw13VcnLock = nullptr;
++    }
+     if (doorbellMap) {
+         doorbellMap->release();
+         doorbellMap = nullptr;
+@@ -1376,6 +1394,8 @@
+         owner->releaseSession();
+         sessionClaimed = false;
+     }
++    if (owner)
++        owner->fw13VcnRelease(this);   // [fw13] 還開著的 VCN session：補送 destroy
+     terminate();
+     return kIOReturnSuccess;
+ }
+@@ -1461,6 +1481,7 @@
+         case PHXN_SEL_DBG_SYSMEM: r = doDbgSysMem(a); break;
+         case PHXN_SEL_DBG_ADOPTQ: r = doDbgAdoptQueue(a); break;
+         case PHXN_SEL_DBG_CLAIM: r = doDbgClaim(a); break;
++        case PHXN_SEL_FW13_VCN_DEC: r = doFw13VcnDec(a); break;
+         default:                 r = kIOReturnBadArgument; break;
+         }
+     }
+@@ -2201,3 +2222,249 @@
+     a->scalarOutput[2] = em;
+     return kIOReturnSuccess;
+ }
++
++// ==== [fw13] VCN 4.0.2 H.264 解碼 ====
++// 流程跟 FW13 的使用者空間工具 vcn/vcnctl.c decodefile 一樣（2026-11-24 實機：4 支 x264 串流 160 張畫面跟 ffmpeg 逐 byte 相同）：
++// 同一個 unified ring（vcnctl up 建在 VRAM +0xC100000、16 KiB）、同一個 fence（+0xC108000）、IB（+0xC112000），
++// 解碼 buffer 從 +0x0D000000 開始：session 128 KiB | msg | feedback | IT scaling | bitstream（固定 4 MiB）| DPB | context | target。
++// unified-queue IB 格式：libdrm tests/amdgpu/vcn_tests.c；ring 命令：Linux amdgpu vcn_v4_0 unified ring（IB、FENCE、END、NOP）。
++static constexpr uint32_t kFw13VcnBase1 = 0x7e00;   // VCN inst0 segment 1（IP discovery）
++static constexpr uint32_t kFw13RbWptr = kFw13VcnBase1 + 0xad,
++                          kFw13RbEnable = kFw13VcnBase1 + 0x85, kFw13RbBaseLo = kFw13VcnBase1 + 0xea,
++                          kFw13RbBaseHi = kFw13VcnBase1 + 0xeb, kFw13RbSize = kFw13VcnBase1 + 0xec;
++static constexpr uint32_t kFw13RingOff = 0x0C100000, kFw13RingDw = 0x4000 / 4, kFw13FenceOff = 0x0C108000,
++                          kFw13IbOff = 0x0C112000, kFw13IbDw = 43;
++static constexpr uint32_t kFw13DecOff = 0x0D000000, kFw13DecLimit = 0x10000000;
++static constexpr uint32_t kFw13Session = 128u * 1024u, kFw13Msg = kFw13Session, kFw13Fb = kFw13Msg + 4096,
++                          kFw13It = kFw13Fb + 4096, kFw13Bs = kFw13It + 4096, kFw13BsCap = 4u << 20,
++                          kFw13Dpb = (kFw13Bs + kFw13BsCap + 4095u) & ~4095u;
++static inline uint32_t fw13Align4k(uint32_t v) { return (v + 4095u) & ~4095u; }
++
++bool PhxBringup::fw13VcnRingOk() const {
++    if (!mmio || !fbAper || !fbMcBase || fbAperLen < kFw13DecLimit)
++        return false;
++    const uint64_t ringMc = fbMcBase + kFw13RingOff;
++    return (rreg(kFw13RbEnable) & 4u) && rreg(kFw13RbBaseLo) == static_cast<uint32_t>(ringMc) &&
++           rreg(kFw13RbBaseHi) == static_cast<uint32_t>(ringMc >> 32) && rreg(kFw13RbSize) == kFw13RingDw;
++}
++
++void PhxBringup::fw13VcnBarWrite(uint32_t off, const void *src, uint32_t bytes) {
++    volatile uint32_t *d = reinterpret_cast<volatile uint32_t *>(fbAper->getVirtualAddress() + off);
++    const uint8_t *s = static_cast<const uint8_t *>(src);
++    for (uint32_t i = 0; i < bytes / 4; i++) {
++        uint32_t v;
++        memcpy(&v, s + i * 4, 4);
++        d[i] = v;
++    }
++    if (bytes & 3) {
++        uint32_t v = 0;
++        memcpy(&v, s + (bytes & ~3u), bytes & 3);
++        d[bytes / 4] = v;
++    }
++}
++
++void PhxBringup::fw13VcnBarZero(uint32_t off, uint32_t bytes) {
++    volatile uint32_t *d = reinterpret_cast<volatile uint32_t *>(fbAper->getVirtualAddress() + off);
++    for (uint32_t i = 0; i < (bytes + 3) / 4; i++)
++        d[i] = 0;
++}
++
++static void fw13Addr(uint32_t *w, uint64_t mc) {
++    w[0] = static_cast<uint32_t>(mc >> 32);
++    w[1] = static_cast<uint32_t>(mc);
++}
++
++// 寫 IB、送上 ring、等 fence。回傳 PHXN_FW13_VCN_*。呼叫者持有 fw13VcnLock。
++uint32_t PhxBringup::fw13VcnSubmit(bool frame, uint32_t *usOut) {
++    const uint64_t base = fbMcBase + kFw13DecOff;
++    uint32_t ib[kFw13IbDw];
++    bzero(ib, sizeof ib);
++    ib[0] = 16; ib[1] = 0x30000002; ib[3] = kFw13IbDw - 4;                       // single queue checksum
++    ib[4] = 16; ib[5] = 0x30000001; ib[6] = 3; ib[7] = (kFw13IbDw - 4) * 4;      // engine info：decode
++    ib[8] = (kFw13IbDw - 8) * 4; ib[9] = 1;                                       // DECODE_BUFFER
++    ib[10] = 1 | 0x00100000;                                                      // MSG | SESSION_CONTEXT
++    fw13Addr(ib + 11, base + kFw13Msg);
++    fw13Addr(ib + 17, base + 0);
++    if (frame) {
++        const uint32_t oCtx = fw13Align4k(kFw13Dpb + fw13VcnDpb), oDt = fw13Align4k(oCtx + fw13VcnCtx);
++        ib[10] |= 0x00000a1e;   // DPB、bitstream、target、feedback、IT scaling、decoder context
++        fw13Addr(ib + 13, base + kFw13Dpb);
++        fw13Addr(ib + 15, base + oDt);
++        fw13Addr(ib + 19, base + kFw13Bs);
++        fw13Addr(ib + 21, base + oCtx);
++        fw13Addr(ib + 23, base + kFw13Fb);
++        fw13Addr(ib + 31, base + kFw13It);
++    }
++    for (uint32_t i = 4; i < kFw13IbDw; i++)
++        ib[2] += ib[i];
++    fw13VcnBarWrite(kFw13IbOff, ib, sizeof ib);
++
++    const uint32_t seq = ++fw13VcnSeq;
++    const uint64_t ibMc = fbMcBase + kFw13IbOff, fenceMc = fbMcBase + kFw13FenceOff;
++    const uint32_t cmd[] = {2, 0, static_cast<uint32_t>(ibMc), static_cast<uint32_t>(ibMc >> 32), kFw13IbDw,   // IB（vmid 0）
++                            3, static_cast<uint32_t>(fenceMc), static_cast<uint32_t>(fenceMc >> 32), seq,      // FENCE
++                            1};                                                                                // END
++    uint32_t w = rreg(kFw13RbWptr) % kFw13RingDw;
++    volatile uint32_t *ring = reinterpret_cast<volatile uint32_t *>(fbAper->getVirtualAddress() + kFw13RingOff);
++    for (uint32_t i = 0; i < 64; i++)   // 補 NOP 到 64 dword（amdgpu_ring_commit 的 align_mask 0x3f）
++        ring[(w + i) % kFw13RingDw] = i < sizeof cmd / 4 ? cmd[i] : 0;
++    hdpFlush();
++    (void)rreg(0x0DE3);   // 讀回當屏障（同 vcnctl）
++    uint64_t t0;
++    clock_get_uptime(&t0);
++    wreg(kFw13RbWptr, (w + 64) % kFw13RingDw);
++
++    const volatile uint32_t *fence = reinterpret_cast<const volatile uint32_t *>(fbAper->getVirtualAddress() + kFw13FenceOff);
++    uint64_t limit;
++    nanoseconds_to_absolutetime(2000ull * 1000000ull, &limit);
++    for (uint32_t spin = 0;; spin++) {
++        if (*fence == seq)
++            break;
++        uint64_t now;
++        clock_get_uptime(&now);
++        if (now - t0 > limit)
++            return PHXN_FW13_VCN_TIMEOUT;
++        if (spin < 200)
++            IODelay(10);     // 前 2 ms 忙等（720p 一張約 1.5 ms）
++        else
++            IOSleep(1);
++    }
++    uint64_t t1, ns;
++    clock_get_uptime(&t1);
++    absolutetime_to_nanoseconds(t1 - t0, &ns);
++    *usOut = static_cast<uint32_t>(ns / 1000);
++    return PHXN_FW13_VCN_OK;
++}
++
++IOReturn PhxBringup::fw13VcnDec(void *client, task_t task, const uint64_t in[5], uint64_t out[4]) {
++    out[0] = out[1] = out[2] = out[3] = 0;
++    const uint64_t op = in[0], inVa = in[1], inLen = in[2], outVa = in[3], outLen = in[4];
++    if (!fw13VcnLock || !task || op < 1 || op > 3 || !inVa || inLen < sizeof(phxn_fw13_vcn_hdr) || inLen > kFw13BsCap + 65536)
++        return kIOReturnBadArgument;
++    IOMemoryDescriptor *inMd = IOMemoryDescriptor::withAddressRange(inVa, inLen, kIODirectionOut, task);
++    if (!inMd)
++        return kIOReturnNoMemory;
++    IOReturn r = inMd->prepare();
++    if (r != kIOReturnSuccess) {
++        inMd->release();
++        return r;
++    }
++    phxn_fw13_vcn_hdr h;
++    inMd->readBytes(0, &h, sizeof h);
++    const uint64_t body = static_cast<uint64_t>(h.msg_len) + h.its_len + h.bs_len;
++    if (h.magic != PHXN_FW13_VCN_MAGIC || h.msg_len > 4096 || h.its_len > 4096 || h.bs_len > kFw13BsCap ||
++        sizeof h + body > inLen) {
++        inMd->complete();
++        inMd->release();
++        return kIOReturnBadArgument;
++    }
++
++    IOLockLock(fw13VcnLock);
++    uint32_t st = PHXN_FW13_VCN_OK, us = 0;
++    do {
++        if (isSleeping || !fw13VcnRingOk()) { st = PHXN_FW13_VCN_NOT_UP; break; }
++        if (fw13VcnOwner && fw13VcnOwner != client) { st = PHXN_FW13_VCN_BUSY; break; }
++        if (op == 1) {
++            if (fw13VcnOwner) { st = PHXN_FW13_VCN_BUSY; break; }   // 同一個 client 一次只能開一個 session
++            const uint64_t need = static_cast<uint64_t>(kFw13DecOff) + kFw13Dpb + fw13Align4k(h.dpb_size) +
++                                  fw13Align4k(h.ctx_size) + h.dt_size;
++            if (!h.dpb_size || !h.ctx_size || !h.dt_size || need > kFw13DecLimit) { st = PHXN_FW13_VCN_LAYOUT; break; }
++            fw13VcnDpb = h.dpb_size;
++            fw13VcnCtx = h.ctx_size;
++            fw13VcnDt = h.dt_size;
++            fw13VcnHandle = h.handle;
++            // 清 session、DPB、context（同 vcnctl：清整段）
++            fw13VcnBarZero(kFw13DecOff, kFw13Bs);
++            fw13VcnBarZero(kFw13DecOff + kFw13Dpb, fw13Align4k(kFw13Dpb + h.dpb_size) - kFw13Dpb + fw13Align4k(h.ctx_size));
++        } else {
++            if (fw13VcnOwner != client) { st = PHXN_FW13_VCN_NO_SESSION; break; }
++            if (h.dpb_size != fw13VcnDpb || h.ctx_size != fw13VcnCtx || h.dt_size != fw13VcnDt || h.handle != fw13VcnHandle) {
++                st = PHXN_FW13_VCN_LAYOUT;
++                break;
++            }
++        }
++        // msg、IT、bitstream 從 user buffer 分段搬進 BAR
++        uint8_t bounce[512];
++        const struct { uint32_t dst, len; } parts[] = {{kFw13Msg, h.msg_len}, {kFw13It, h.its_len}, {kFw13Bs, h.bs_len}};
++        uint64_t src = sizeof h;
++        fw13VcnBarZero(kFw13DecOff + kFw13Msg, 4096);
++        for (const auto &pt : parts) {
++            for (uint32_t o = 0; o < pt.len; o += sizeof bounce) {
++                const uint32_t n = pt.len - o < sizeof bounce ? pt.len - o : static_cast<uint32_t>(sizeof bounce);
++                inMd->readBytes(src + o, bounce, n);
++                fw13VcnBarWrite(kFw13DecOff + pt.dst + o, bounce, n);
++            }
++            src += pt.len;
++        }
++        if (op == 2) {
++            const uint32_t fbInit[2] = {0x2c, 0x2c};   // 同 libdrm 向量的 feedback 初值
++            fw13VcnBarWrite(kFw13DecOff + kFw13Fb, fbInit, sizeof fbInit);
++            fw13VcnBarZero(kFw13DecOff + kFw13Bs + h.bs_len, 64);
++        }
++        st = fw13VcnSubmit(op == 2, &us);
++        if (st != PHXN_FW13_VCN_OK)
++            break;
++        if (op == 1)
++            fw13VcnOwner = client;
++        if (op == 3)
++            fw13VcnOwner = nullptr;
++        if (op == 2) {
++            out[3] = reinterpret_cast<const volatile uint32_t *>(fbAper->getVirtualAddress() + kFw13DecOff + kFw13Fb)[3];
++            if (outVa && outLen) {
++                const uint32_t oDt = fw13Align4k(fw13Align4k(kFw13Dpb + fw13VcnDpb) + fw13VcnCtx);
++                const uint32_t n = outLen < fw13VcnDt ? static_cast<uint32_t>(outLen) : fw13VcnDt;
++                IOMemoryDescriptor *outMd = IOMemoryDescriptor::withAddressRange(outVa, n, kIODirectionIn, task);
++                if (outMd && outMd->prepare() == kIOReturnSuccess) {
++                    const volatile uint8_t *pix = reinterpret_cast<const volatile uint8_t *>(fbAper->getVirtualAddress() + kFw13DecOff + oDt);
++                    uint32_t chunk[256];   // 核心堆疊有限：每次 1 KiB
++                    for (uint32_t o = 0; o < n; o += sizeof chunk) {
++                        const uint32_t m = n - o < sizeof chunk ? n - o : static_cast<uint32_t>(sizeof chunk);
++                        const volatile uint32_t *p32 = reinterpret_cast<const volatile uint32_t *>(pix + o);
++                        for (uint32_t i = 0; i < (m + 3) / 4; i++)
++                            chunk[i] = p32[i];
++                        outMd->writeBytes(o, chunk, m);
++                    }
++                    outMd->complete();
++                } else {
++                    r = kIOReturnNoMemory;
++                }
++                if (outMd)
++                    outMd->release();
++            }
++        }
++    } while (false);
++    out[0] = st;
++    out[1] = fw13VcnSeq;
++    out[2] = us;
++    IOLockUnlock(fw13VcnLock);
++    inMd->complete();
++    inMd->release();
++    return r;
++}
++
++void PhxBringup::fw13VcnRelease(void *client) {
++    if (!fw13VcnLock)
++        return;
++    IOLockLock(fw13VcnLock);
++    if (fw13VcnOwner == client) {
++        if (!isSleeping && fw13VcnRingOk()) {
++            const uint32_t destroy[6] = {40, 24, 0, 2, fw13VcnHandle, 0};
++            fw13VcnBarZero(kFw13DecOff + kFw13Msg, 4096);
++            fw13VcnBarWrite(kFw13DecOff + kFw13Msg, destroy, sizeof destroy);
++            uint32_t us = 0;
++            fw13VcnSubmit(false, &us);
++        }
++        fw13VcnOwner = nullptr;
++    }
++    IOLockUnlock(fw13VcnLock);
++}
++
++IOReturn IOAccelPhxNativeClient::doFw13VcnDec(IOExternalMethodArguments *a) {
++    if (!shape(a, 5, 4, 0, 0))
++        return kIOReturnBadArgument;
++    uint64_t out[4];
++    const IOReturn r = owner->fw13VcnDec(this, task, a->scalarInput, out);
++    for (int i = 0; i < 4; i++)
++        a->scalarOutput[i] = out[i];
++    return r;
++}
+diff -ruN a/src/phxbringup/PhxNativeABI.h b/src/phxbringup/PhxNativeABI.h
+--- a/src/phxbringup/PhxNativeABI.h	2026-11-24 11:36:07.331911155 +0000
++++ b/src/phxbringup/PhxNativeABI.h	2026-11-24 11:36:07.334065128 +0000
+@@ -66,6 +66,11 @@
+     PHXN_SEL_DBG_CLAIM = 113,      /* in: [0] 1 = mark the GPU driven (nmxgpu-claimed) and re-run matching so PhxAccel starts. */
+     PHXN_SEL_DBG_SYSMEM = 111,     /* in: [0] op (1 alloc [1] bytes, 2 read [1] off, 3 write [1] off [2] val, 4 free)  out: [0] phys  [1] len/value */
+     PHXN_SEL_DBG_DOORBELL = 110,   /* in: [0] doorbell BAR2 byte offset (8-aligned) [1] value lo [2] value hi; writes a 64-bit doorbell. */
++    /* [fw13] VCN 4.0.2 H.264 解碼（不需 phxdebug／root）。VCN 本身由 root 的 vcnctl up 先帶起來（ring 在 VRAM +0xC100000）。
++     * in: [0] op（1 建立 session、2 解碼一張、3 關閉 session）[1] 輸入的 user VA [2] 輸入長度 [3] 輸出的 user VA（op 2）[4] 輸出長度
++     * 輸入 = struct phxn_fw13_vcn_hdr ＋ msg[msg_len] ＋ its[its_len] ＋ bitstream[bs_len]（message 由 user space 組好）
++     * out: [0] 狀態（PHXN_FW13_VCN_*）[1] fence seq [2] VCN 花的時間（µs）[3] 讀回的 feedback dword 3 */
++    PHXN_SEL_FW13_VCN_DEC = 130,
+ };
+ 
+ /* GPU memory layout registers (MMHUB 3.0.1 segment 1 = 0x1A000): Linux mmhub_v3_0_1_get_fb_location / get_mc_fb_offset */
+@@ -222,4 +227,22 @@
+ static_assert(sizeof(struct phxn_cs_in) == 32, "cs_in is 32 B");
+ static_assert(sizeof(struct phxn_info) == 192, "info is 192 B");
+ 
++/* [fw13] PHXN_SEL_FW13_VCN_DEC 的輸入標頭 */
++#define PHXN_FW13_VCN_MAGIC 0x44333146u   /* "F13D" */
++struct phxn_fw13_vcn_hdr {
++    uint32_t magic;
++    uint32_t handle;          /* session handle（必須跟 msg 裡的一樣；kext 在 client 關掉時用它補送 destroy） */
++    uint32_t msg_len, its_len, bs_len;
++    uint32_t dpb_size, ctx_size, dt_size;   /* op 1 決定版面，op 2／3 必須相同 */
++    uint32_t reserved[8];
++};
++enum {
++    PHXN_FW13_VCN_OK = 0,
++    PHXN_FW13_VCN_NOT_UP = 1,      /* VCN ring 不在預期的位置（沒跑 vcnctl up） */
++    PHXN_FW13_VCN_BUSY = 2,        /* 別的 client 正在用 */
++    PHXN_FW13_VCN_TIMEOUT = 3,     /* fence 2 秒內沒回來 */
++    PHXN_FW13_VCN_LAYOUT = 4,      /* 版面超出範圍或跟 session 不符 */
++    PHXN_FW13_VCN_NO_SESSION = 5,
++};
++
+ #endif /* PHX_NATIVE_ABI_H */
