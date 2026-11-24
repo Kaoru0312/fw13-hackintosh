@@ -1,7 +1,7 @@
 # 休眠（S4）計畫：FW13 移植 nullarc PR #20
 
 狀態：**走路線 C（2026-11-25）**：先不動 PhxAccel（保留 d9c4d407 的縮放），做 PhxBringup 138、PhxSleepPolicy、OpenCore；先測「開機能不能從休眠映像還原」（可以在 GPU 接管關閉時測）。
-目前：**第 2 步 PhxBringup build 138 補丁寫好**（`nullarc-port/patches/phxbringup-v040-03-hibernate.patch`），還沒在 Mac 上編。
+目前：**第 2 步完成**（PhxBringup build 138 已裝，2026-11-25 04:05 開機）；**第 3 步**（PhxSleepPolicy＋OpenCore）腳本寫好，還沒執行。
 
 ## 為什麼是休眠
 
@@ -144,3 +144,16 @@
 - PR #20 的 diff 疊在 01／02 上：7 個 hunk 都套得上（第 1 個 fuzz 2，只是宣告位置），結果跟 PR 一致。
 - 這裡（Linux）用 MacKernelSDK `-fsyntax-only` 編過：0 error、0 warning。真正的編譯和連結要在 Mac 上跑 `gpu/phxbringup-fw13-build.sh`。
 - 沒有睡眠時的行為：`suspended` 永遠是 false；開機時 adopt 前沒有任何 VMID 綁定，丟綁定那段什麼都不做 → 跟 137 一樣。
+- **已裝（2026-11-25 04:0x）**：第一次開機卡在 verbose 畫面（最後幾行是 itlwm、USB 連接埠、NVMe；PhxBringup 已 `service up`、印了開機時的 `wake: nothing held`），
+  強制關機再開就正常。是不是 138 造成的：不知道（這個階段 138 跟 137 執行的程式一樣）。再發生要記下來。
+  04:07 確認：`phx-build = 138`、`PhxAMDFB on the panel: 1`、Metal for every app、vcn up rc 0、phxboot done。
+
+## 第 3 步：PhxSleepPolicy＋OpenCore（`power/hib-oc-install.sh`）
+
+- `power/sleeppolicy/`：PR #20 `d424456` 的 `src/sleeppolicy` 原封不動（MIT／GPL-2.0-only）。這裡 `-fsyntax-only` 0 error。
+- config.plist：Kernel.Add 最後面加 PhxSleepPolicy（不插在 Lilu 後面，因為 repo 的腳本用固定編號）；停用 [47] HibernationFixup、[48] BootFBSleep；
+  boot-args 拿掉 `acpi=0x200000`；`HibernateSkipsPicker = true`。`-v`、`debug=0x100` 這步先不動。
+- 睡眠仍關著（`SleepDisabled = 1`），裝完不會真的睡。開機後看：
+  - `debug.phxsleep_installed`：1 = 搶到睡眠政策；-1 = 別人先註冊（那就要把它移到 Lilu 後面）。
+  - `IOSleepSupported`：BootFBSleep 停用後如果變成沒有／No → macOS 下真的沒有 `_S3`，要加 SSDT-S3；還是 Yes → `_S3` 存在，不用 SSDT。
+    這樣就能回答 `_S3` 的問題，不用到 CachyOS 查。
