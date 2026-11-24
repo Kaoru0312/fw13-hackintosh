@@ -284,6 +284,8 @@ static CFDataRef copy_avcC(CMFormatDescriptionRef fmt) {
   return NULL;
 }
 
+static void flush_pending(State* s);  // 定義在 decode 那段（交出重排佇列裡的畫面）
+
 // ---- CMBaseClass
 // ---------------------------------------------------------------------------
 static OSStatus base_invalidate(CMBaseObjectRef obj) {
