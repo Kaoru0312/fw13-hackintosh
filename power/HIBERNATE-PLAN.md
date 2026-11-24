@@ -1,6 +1,7 @@
 # 休眠（S4）計畫：FW13 移植 nullarc PR #20
 
-狀態：**第 0 步 macOS 部分已完成（2026-11-24 21:56）**，還沒改任何東西。CachyOS 部分還沒做。
+狀態：**走路線 C（2026-11-25）**：先不動 PhxAccel（保留 d9c4d407 的縮放），做 PhxBringup 138、PhxSleepPolicy、OpenCore；先測「開機能不能從休眠映像還原」（可以在 GPU 接管關閉時測）。
+目前：**第 2 步 PhxBringup build 138 補丁寫好**（`nullarc-port/patches/phxbringup-v040-03-hibernate.patch`），還沒在 Mac 上編。
 
 ## 為什麼是休眠
 
@@ -134,3 +135,12 @@
   這正是 PR #20 文件寫的狀況：PC 上沒有東西把 `IOHibernateRTCVariables` 存起來，OpenCore 回報 "RTC hibernation is 0, NVRAM hibernation is 0 / Not Found"、
   boot.efi `EB|H:FAIL`；HibernationFixup 1.5.4 在 26.7 沒存到。PhxSleepPolicy 的 `copyKey()` 就是補這一段。
   要證實：裝 PhxSleepPolicy 後在 OpenCore debug log（或 `nvram -p` 喚醒前）看金鑰有沒有存進去。
+
+## 第 2 步：PhxBringup build 138（`phxbringup-v040-03-hibernate.patch`）
+
+- 內容：PR #20 `0aedfd3` 的 PhxBringup 部分原封不動（`suspended`／`retiredAtSleep`／`resumeEvent`；setPowerState(0) 等 GPU 做完再擋送出；
+  adoptQueue 重新 adopt 時丟掉舊 VMID 綁定、gfx queue adopt 完才放行；`gpuRetired()` 睡眠中回傳凍結值；`gpuSubmit()` 睡眠中等待；hangCheck 暫停），
+  再加 FW13 的一段：setPowerState(0) 時在 `fw13VcnLock` 下把開著的 VCN session 作廢（`fw13VcnOwner = nullptr`、丟掉 alias 映射）。
+- PR #20 的 diff 疊在 01／02 上：7 個 hunk 都套得上（第 1 個 fuzz 2，只是宣告位置），結果跟 PR 一致。
+- 這裡（Linux）用 MacKernelSDK `-fsyntax-only` 編過：0 error、0 warning。真正的編譯和連結要在 Mac 上跑 `gpu/phxbringup-fw13-build.sh`。
+- 沒有睡眠時的行為：`suspended` 永遠是 false；開機時 adopt 前沒有任何 VMID 綁定，丟綁定那段什麼都不做 → 跟 137 一樣。

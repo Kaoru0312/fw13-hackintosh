@@ -1,5 +1,5 @@
 #!/bin/bash
-# 把 gpu/phxbringup-fw13-build.sh 編出的 FW13 版 PhxBringup（build 134：拓撲表＋VCN 解碼介面）換到 ESP 上。
+# 把 gpu/phxbringup-fw13-build.sh 編出的 FW13 版 PhxBringup（拓撲表＋VCN 解碼介面＋休眠，build 號見 PHX_KEXT_BUILD）換到 ESP 上。
 #   - 只換 Contents/MacOS/PhxBringup 這個二進位，Info.plist 沿用 ESP 上原本那份（IOPCIMatch 已含 0x15bf1002）。
 #   - 換之前把 ESP 上整個 kext 備份成 EFI/OC/PhxBringup.kext.bak-fw13-<時間>，並在 ~/EFI-backup 另存一份。
 #   - config.plist 不動（Kernel.Add [37] 的路徑不變）。
