@@ -32,6 +32,7 @@
 - **硬解第 2 步通過（2026-11-24 13:11）**：自己的 H.264 parser＋message 產生器解出 mechrevo 的 160×128 四象限測試檔（Y 48／200、UV 128 正確），libdrm 畫面用自己的 message 也解對。下一步：P／B 畫面（DPB 管理）。
 - **SDMA 解除 halt（GFXOFF 階段 1a，2026-11-24 05:24，執行期、重開機就恢復）**：RLC_GPM_STAT 回到 Linux 的 0x000c001a；閒置封裝中位數 8.03 → **7.27 W**（不同次開機比較，見 GFXOFF-PLAN.md）。上游 RX16 有 SDMA 運作時自己重開的紀錄，長時間穩定性觀察中；設回 halt：`sudo bash /Users/kaoru/fw13-hackintosh/gpu/sdma-test.sh --halt`。
 - **SDMA 開機自動套用已安裝（2026-11-24 13:0x）**：執行期從 05:24 運作到 12:5x（約 7.5 小時）沒有自己重開；`gpu/sdma-install.sh` 在 phxboot.sh 第 113 行後插入（備份 `phxboot.sh.bak-sdma`），重開機後生效、待確認 log。停用：`sudo touch /Users/Shared/gpu/sdma-off`。
+- **長時間穩定性（2026-11-24 19:17）**：uptime 14:13（05:04 開機後沒重開）；SDMA 從 05:24 執行期解除 halt 起連續運作約 13.9 小時、閘控一直開著（`0xF89A = 0x08084000`、`0xEC48 = 0x00060041`）；期間使用者闔蓋數小時（插電、系統不睡），沒有 panic、沒有 WindowServer 報告。DiagnosticReports 只有 05:04 與 00:31 兩個 `shutdown_stall`（重開機時的關機卡頓；00:31 那次在今天的修改之前）和一個 rsync。
 - `vcn/PHASE3.md` 的路線 D「不可行」要更正：ryzenstatus-utils 的文件寫 `/System/Library/Video/Plug-Ins` 的解碼器不檢查簽章（FW13 沒驗證）。
 
 ## 0a. 最新狀態速覽（2026-11-21 22:50）
