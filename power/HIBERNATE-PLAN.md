@@ -97,3 +97,8 @@
   → 11-23 03:44 有人換過 PhxAccel，安裝時把 vblfix 備份起來。repo（含 git 歷史、origin/main）沒有這次的紀錄。
 - `BootFBSleep` 原始碼在 Mac 上的 `power/bootfbsleep/`，**沒進 repo**（不是 gitignore 擋的，是沒 commit）。
 - 推論：11-22～11-23 有另一段工作只留在 Mac 上，沒推。要看 Mac 上的 `git status`。
+- 2026-11-24 22:1x：`phxaccel-port` 現在的原始碼編出來是 `8938cdb4`（= vblfix 備份），**不是**裝著的 `d9c4d407` → 裝著的 PhxAccel 不是 repo 這份原始碼編的，來源還不知道。
+- `power/bootfbsleep/build/BootFBSleep.kext`：`com.fw13.BootFBSleep` 1.7.0，`IOClass BootFBSleep`、`IOProviderClass IOResources`，有 `plugin_start.o` → Lilu 外掛。
+  資料夾裡只有 .o 和 kext，**沒有原始碼**。
+- Mac 上另有未 commit 的 `cppc/`（`cppc/src` 看起來是另一個 repo 的 clone，有 `build_kext.py`、`mesa_phoenix_*.py`；`cppc/build/PhxCPPC.kext`；紀錄 11-23 13:38）。
+- `acpi=0x200000`：repo 的 md／sh 裡都沒有提到。
