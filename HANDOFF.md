@@ -32,6 +32,7 @@
   - 這次重開機也是 SDMA 開機自動套用第一次生效（兩個改動同時），出問題時先分開：`sudo touch /Users/Shared/gpu/sdma-off` 只關 SDMA。
   - **重開機確認（2026-11-24 19:43）**：`phx-build` = 134、沒有 phxboot-off；phxboot.log：`[port] gpucg: 0xEC48=0x00060041 …`、`[port] sdma: F32_CNTL=0x08084000 CNTL=0x10002440 CGCG_FENCE=1 RLC_GPM_STAT=0x000c001a`、`done 19:42:53`。新 kext、閘控、SDMA 開機套用都正常。
   - **換成 build 135（2026-11-24 19:48）**：sha256 `f546af2a…`（78144 bytes），VCN 輸出改從 carve-out 系統記憶體讀。備份 build 134：`EFI/OC/PhxBringup.kext.bak-fw13-1124-194823`；release＋拓撲表的原版仍是 `bak-fw13-1124-193908`。
+  - **換成 build 136（2026-11-24 20:45）**：sha256 `5514408c…`（91232 bytes），新增 VideoToolbox 沙盒放行的 user client `AppleVideoToolboxParavirtualizationUserClient`（type F13V，只做 VCN 解碼）。備份 build 135：`EFI/OC/PhxBringup.kext.bak-fw13-1124-204507`。外掛 0.2 同時換進系統快照（rootpatch 第二次）。
   - **開機自動帶起 VCN 已安裝（2026-11-24 20:0x，重開機後生效）**：`gpu/vcn-boot-install.sh`，phxboot.sh 備份 `.bak-vcn`，log `/var/log/vcn-up.log`；停用 `sudo touch /Users/Shared/gpu/vcn-off`。
 - **⚠️ 系統磁碟區已修改（2026-11-24 20:2x，重開機後生效）**：`vcn/vt/rootpatch.sh --install --yes` 把 `H264VCNDecoder.bundle`（VideoToolbox H.264 解碼外掛）放進系統磁碟區 `/dev/disk1s4` 的 `/System/Library/Video/Plug-Ins/`，並 `bless --create-snapshot` 建了新快照。修改前是 Apple 原本的密封快照 `com.apple.os.update-8EC5DFA0…`（Sealed: Yes），authenticated-root disabled、FileVault off。
   - **還原（回到 Apple 原本的快照）**：`sudo bless --mount / --bootefi --last-sealed-snapshot` 後重開機；macOS 進不去時從 Recovery 的終端機執行，`--mount "/Volumes/Macintosh"`。只拿掉外掛：`sudo bash vcn/vt/rootpatch.sh --remove --yes`。
