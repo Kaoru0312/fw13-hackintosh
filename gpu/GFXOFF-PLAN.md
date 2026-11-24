@@ -89,3 +89,10 @@ repo 裡的 `nullarc-kext/phxbringup/PhxBringup.cpp` 跟 nullarc main `b787e24`�
 - 功耗：`power/idle-measure.sh`，跟 8.03 W（閘控後中位數）比。
 - 穩定性：mtlprobe、Safari 播影片、開關 App、螢幕關閉、闔上螢幕；`sysctl debug.phx_gfxoff_allows debug.phx_gfxoff_wakes` 要一直增加（代表真的有進出 GFXOFF）。
 - 長時間：至少跑幾個小時，注意有沒有像 RX16 那樣自己重開。
+
+## 重編 PhxBringup 進度（2026-11-24）
+
+- 第 1 項（可重現）✅：`gpu/phxbringup-repro.sh` 在使用者 Mac（Apple clang 21.0.0，clang-2100.1.1.101）用 v0.4.0-alpha（9dd76b6）
+  編出 sha256 `4a88035f…` = release，73256 bytes，逐 byte 相同。
+- 第 2 項（拓撲表進原始碼）：`nullarc-port/patches/phxbringup-v040-01-fw13-topology.patch` ＋ `gpu/phxbringup-fw13-build.sh 1`，
+  預期跟「release + topology-patch.py」逐 byte 相同。待上機。

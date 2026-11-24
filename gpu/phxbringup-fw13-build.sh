@@ -18,7 +18,7 @@ for P in "$R"/nullarc-port/patches/phxbringup-v040-*.patch; do
   num=$(basename "$P" | sed 's/phxbringup-v040-\([0-9]*\)-.*/\1/')
   [ "$((10#$num))" -le "$UPTO" ] || continue
   echo "== 套 $(basename "$P")"
-  (cd "$W" && patch -p1 --no-backup-if-mismatch < "$P") || { echo "補丁套不上，停止"; exit 1; }
+  (cd "$W" && patch -p1 < "$P") || { echo "補丁套不上，停止"; exit 1; }
   n=$((n + 1))
 done
 sh "$W/src/phxbringup/build.sh" "$MKSDK" 2>&1 | grep -v 'Wshadow\|shadows a field\|previous\|declaration is here\|^ *[0-9]* |\|^ *| *\^\|warnings generated' || true
