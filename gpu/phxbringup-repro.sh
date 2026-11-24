@@ -12,7 +12,7 @@ WANT=4a88035fd2ead990b8c44b638c9283d579b14d6ba4f0b48d78d6435a3a44a412
 
 [ -d "$MKSDK/Headers" ] || { echo "找不到 $MKSDK/Headers"; exit 1; }
 if [ ! -d "$N/.git" ]; then
-  echo "== 下載 nullarc v0.4.0-alpha 原始碼到 $N"
+  echo "== 下載 nullarc v0.4.0-alpha 原始碼到 ${N}"
   git clone -q --depth 1 --branch v0.4.0-alpha https://github.com/luuumi-dev/nullarc.git "$N" || { echo "git clone 失敗"; exit 1; }
 fi
 echo "== 原始碼：$(git -C "$N" describe --tags 2>/dev/null) $(git -C "$N" rev-parse --short HEAD)"
@@ -20,10 +20,10 @@ echo "== 編譯器：$(clang --version | head -1)"
 sh "$N/src/phxbringup/build.sh" "$MKSDK" || { echo "編譯失敗"; exit 1; }
 BIN=$N/src/phxbringup/build/PhxBringup.kext/Contents/MacOS/PhxBringup
 GOT=$(shasum -a 256 "$BIN" | cut -d' ' -f1)
-echo "== 編出來：$GOT（$(stat -f %z "$BIN") bytes）"
+echo "== 編出來：${GOT}（$(stat -f %z "$BIN") bytes）"
 echo "== release：$WANT"
 REL=$(find "$R/nullarc-release" -path '*PhxBringup.kext/Contents/MacOS/PhxBringup' 2>/dev/null | head -1)
-[ -n "$REL" ] && echo "== release 檔：$REL（$(stat -f %z "$REL") bytes，sha $(shasum -a 256 "$REL" | cut -c1-16)…）"
+[ -n "$REL" ] && echo "== release 檔：${REL}（$(stat -f %z "$REL") bytes，sha $(shasum -a 256 "$REL" | cut -c1-16)…）"
 if [ "$GOT" = "$WANT" ]; then
   echo "✅ 逐 byte 相同：本機可以重現 release 二進位"
 else
