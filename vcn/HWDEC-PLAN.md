@@ -86,3 +86,12 @@ H.264 硬解只對「真的送 H.264 給 VideoToolbox」的播放有用。YouTub
 - `decodefile vcn_quadrants.h264`（160×128，2 個 slice、107 bytes）：整條路（parser → message → VCN）第一次解真的檔案。
   **四象限 Y 平均 48.0／199.9／200.0／48.0、UV 平均 128.0**，跟 mechrevo README 寫的編碼來源（Y = 48／200、UV = 128）一致。
 - 下一步：P／B 畫面（POC 計算、DPB 管理）。容器裡有 ffmpeg，可以產生多張畫面的測試檔，並用 ffmpeg 的解碼結果當答案（每張畫面的 MD5）。
+
+## 第 3 步（P／B 畫面）進行中（2026-11-24，未完成、未上機）
+
+- `vcn/h264/h264_dpb.[ch]`：POC（type 0／1／2）、sliding window、MMCO 1–6、IDR、DPB slot 分配、輸出排序資訊。可編譯，還沒接進 vcnctl、還沒測。
+- `vcn/h264/testdata/t1..t4`：ffmpeg（libx264）產生的測試檔（IPPP baseline、IBBP、B-pyramid＋weighted pred、720p High），
+  `.framemd5` 是 ffmpeg 解碼後每張畫面（NV12、顯示順序）的 MD5，當標準答案。
+- 待辦：vcnctl `decodefile` 改成解全部畫面、依 group／POC 排序後算 MD5 跟 `.framemd5` 比對。
+- 動態桌布：P／B 做完也還不能用，還差 kext 解碼介面（現在走 root＋phxdebug 的除錯介面、每個 dword 一次呼叫，太慢）和 VideoToolbox 外掛；
+  另外 Aerial 桌布影片用的 codec 是 H.264 還是 HEVC，沒查證（HEVC 要另外寫 parser）。
