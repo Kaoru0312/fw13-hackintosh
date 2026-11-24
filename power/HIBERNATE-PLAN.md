@@ -68,7 +68,7 @@
 ## 第 0 步結果（macOS，2026-11-24 21:56，`power/hib-check-1124-215605.txt` 在 Mac 上）
 
 - **`IOSleepSupported = Yes`**、Supported Features 有 `Hibernation`、`DeepSleep`。PR #20 說沒有 `_S3` 時平台會回報不支援睡眠；
-  這裡是支援 → 推論 macOS 下 `_S3` 存在（`CNSB == 0 && DAS3 == 1` 成立），**SSDT-S3 可能不需要**。等 CachyOS 的 dmesg 再確認。
+  這裡是支援 → ~~推論 macOS 下 `_S3` 存在~~ **更正（22:2x）**：BootFBSleep 掛了 `AppleACPIPlatformExpert::queryPlatformCanSleep`，hibernatemode 開著時直接回答 allow，所以 `IOSleepSupported = Yes` 可能是它造成的，**不能拿來判斷 `_S3`**。等 CachyOS 的 dmesg。
   （HANDOFF 記的「S3 醒不來」也符合：當時真的進了 S3。）
 - `SleepDisabled = Yes`、AC `hibernatemode 0`、電池 `hibernatemode 3`。
 - 記憶體 32768 MiB；Data 磁碟剩 108 GiB；`/private/var/vm` 是空的（還沒有 sleepimage）。
@@ -102,3 +102,12 @@
   資料夾裡只有 .o 和 kext，**沒有原始碼**。
 - Mac 上另有未 commit 的 `cppc/`（`cppc/src` 看起來是另一個 repo 的 clone，有 `build_kext.py`、`mesa_phoenix_*.py`；`cppc/build/PhxCPPC.kext`；紀錄 11-23 13:38）。
 - `acpi=0x200000`：repo 的 md／sh 裡都沒有提到。
+- 2026-11-24 22:2x：
+  - **`d9c4d407` = vblfix ＋「HiDPI round 3」顯示縮放（DSCL）實驗**：多出 sysctl `phxfb_scaling`、`phxfb_scaletest`，boot-arg `-phxnoscale`，
+    字串 "[port] HiDPI round 3: 1 = scaled modes through the display scaler…"、DCHUBP_CNTL 測試等。原始碼很可能在 Mac 上沒 commit 的 `display/dscl/`。
+  - **BootFBSleep 就是先前一次休眠嘗試**（Lilu 外掛，1.7.0，ESP 上 7 個備份 1122f–1123a）。從字串看它掛了：
+    `IOHibernateSystemSleep`、`IOHibernateSystemHasSlept`、`hibernate_setup`（記錄回傳值）；
+    `IOPMrootDomain::updatePreventSystemSleepList`（"ignore system sleep preventer %s"、"remove existing preventer"）；
+    `AppleACPIPlatformExpert::queryPlatformCanSleep`（"hibernatemode %u -> allow"）、`getSystemStateForSleepType`（"sleep type %u -> ACPI S%u"）。
+    跟 PR #20 是同一件事的不同做法（PR #20：政策 handler＋NVRAM 金鑰；BootFBSleep：Lilu 掛函式）。結果如何、為什麼停下來：不知道，要問使用者。
+  - `cppc/src`：沒有 remote 的 grafted clone，HEAD `77bac94 PhxCPPC 1.0.2`，跟 PhxAccel 無關。
