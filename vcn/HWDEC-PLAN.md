@@ -180,3 +180,19 @@ build 135（補丁 02 更新）：輸出改從 carve-out 的系統記憶體位�
 - `vcn/vt/vttest.c`：用系統的 VTDecompressionSession 解檔，`--hw` 要求硬體、`--sw` 只用軟體、`--temporal` 要求顯示順序輸出，
   印 UsingHardwareAcceleratedVideoDecoder、輸出順序、每張時間，並跟 .framemd5 比對。
 - 只有 h264vcn.c 在 Linux 用假標頭做過語法檢查（只缺 IO_OBJECT_NULL 這個假標頭沒定義的常數）；CoreMedia／VideoToolbox 的部分要在 Mac 上編譯才知道。
+
+### 第 5 步上機（2026-11-24 20:2x–20:4x）
+
+- 系統磁碟區修改：`/System/Library/Video` 沒有 firmlink（/usr/share/firmlinks 只有 CoreTypes.bundle/Contents/Library），
+  所以用 `vcn/vt/rootpatch.sh` 掛載系統磁碟區 `/dev/disk1s4`、放入外掛、`bless --create-snapshot`。重開後快照
+  `com.apple.bless.2D700BE6…`、Sealed: Broken（預期），外掛在 `/System/Library/Video/Plug-Ins`，開機時 `vcn up: rc 0`。
+- `vttest --hw`：`-12913`（kVTVideoDecoderNotAvailableNowErr）。外掛 log：`VTDecoderXPCService … h264vcn_create: 打不開 PhxBringup`；
+  kernel：`Sandbox: VTDecoderXPCService deny(1) iokit-open-user-client IOAccelPhxNativeClient`。
+  VTDecoderXPCService 的 Info.plist：`_SandboxProfile = VTDecoderSandboxProfile`，檔案在 xpc 的 Contents/Resources，iokit 規則只放行 6 個確切的
+  user client 類別名稱：AppleAVDUserClient、AppleProResUserClient、AppleJPEGDriverUserClient、com_apple_AthenaUserClient、
+  AppleAfterburnerUserClient、AppleVideoToolboxParavirtualizationUserClient。這些 kext 都有安裝但都沒載入（ioreg 計數 0）。
+- `vttest`（系統預設）：系統選了軟體解碼器，外掛連 log 都沒有；vtprobe 清單裡有 "FW13 VCN H.264 Decoder"（有登記）。
+  Apple 的軟體 AVC 解碼器 Info.plist 有 `VTRating 200`，GVA 硬體解碼器有 `CMDependencies/IORegistryRequiredKey`。
+- Safari YouTube（2026-11-24 20:39）：`avc1.640028`、1920×1080@24，**891 dropped of 3851**（約 23%，軟體解碼）。
+- 修改（build 136 ＋ 外掛 0.2）：kext 新增 user client 類別 `AppleVideoToolboxParavirtualizationUserClient`（type 'F13V'，只做 selector 130）；
+  外掛改開這個 client（不再 Hello，從 registry 讀 phx-build ≥ 136）、Info.plist 加 `VTRating 300`、CreateInstance 時寫 log。

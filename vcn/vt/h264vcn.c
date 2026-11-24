@@ -11,11 +11,10 @@
 #include "../h264/h264_parse.h"
 #include "../h264/vcn_h264_msg.h"
 
-#define UC_TYPE 0x4E34384Eu   // 'N48N'
-#define SEL_HELLO 0
+#define UC_TYPE 0x46313356u   // 'F13V'：kext 的 AppleVideoToolboxParavirtualizationUserClient（VTDecoderXPCService 的沙盒放行的名字）
 #define SEL_FW13_VCN_DEC 130
 #define FW13_VCN_MAGIC 0x44333146u
-#define MIN_KEXT_BUILD 135u
+#define MIN_KEXT_BUILD 136u
 #define BS_CAP (4u << 20)
 
 typedef struct {
@@ -125,13 +124,19 @@ H264Vcn *h264vcn_create(const uint8_t *c, size_t len, int *why, char *msg, size_
 
    io_service_t svc = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("PhxBringup"));
    if (!svc) FAIL(H264VCN_NOT_AVAILABLE, "找不到 PhxBringup");
+   uint32_t build = 0;
+   CFTypeRef bp = IORegistryEntryCreateCFProperty(svc, CFSTR("phx-build"), kCFAllocatorDefault, 0);
+   if (bp && CFGetTypeID(bp) == CFNumberGetTypeID()) CFNumberGetValue((CFNumberRef)bp, kCFNumberSInt32Type, &build);
+   if (bp) CFRelease(bp);
+   if (build < MIN_KEXT_BUILD) { IOObjectRelease(svc); FAIL(H264VCN_NOT_AVAILABLE, "PhxBringup 太舊（要 build 136 以上）"); }
    kern_return_t kr = IOServiceOpen(svc, mach_task_self(), UC_TYPE, &v->conn);
    IOObjectRelease(svc);
-   if (kr) FAIL(H264VCN_NOT_AVAILABLE, "打不開 PhxBringup");
-   uint64_t hin[2] = {1, 0}, hout[4];
-   uint32_t hn = 4;
-   if (IOConnectCallScalarMethod(v->conn, SEL_HELLO, hin, 2, hout, &hn)) FAIL(H264VCN_NOT_AVAILABLE, "Hello 失敗");
-   if (hout[1] < MIN_KEXT_BUILD) FAIL(H264VCN_NOT_AVAILABLE, "PhxBringup 太舊（要 build 135 以上）");
+   if (kr) {
+      snprintf(msg, msglen, "打不開 PhxBringup 的 VCN client（kr 0x%x）", kr);
+      *why = H264VCN_NOT_AVAILABLE;
+      h264vcn_destroy(v);
+      return NULL;
+   }
 
    v->handle = 0x46770000u | (__atomic_add_fetch(&g_handles, 1, __ATOMIC_RELAXED) & 0xffffu);
    uint32_t w[14];

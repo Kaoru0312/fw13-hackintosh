@@ -723,6 +723,7 @@ __attribute__((visibility("default"))) OSStatus H264VCN_VTDecoder_CreateInstance
   if (!out) return kVTParameterErr;
   *out = NULL;
   if (codec != kCMVideoCodecType_H264) return kVTCouldNotFindVideoDecoderErr;
+  os_log(logger(), "CreateInstance（VideoToolbox 選了這個外掛）");
   CMBaseObjectRef obj = NULL;
   OSStatus r =
       CMDerivedObjectCreate(alloc, &kVTable, VTVideoDecoderGetClassID(), &obj);
