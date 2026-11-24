@@ -44,4 +44,4 @@ cmp -s "$NEW" "$K/Contents/MacOS/PhxBringup" || { echo "寫入後比對失敗，
 sync
 echo "== 完成：ESP 上的 PhxBringup 換成 ${NEW_SHA}…（Info.plist、config.plist 都沒動）"
 echo "還原（CachyOS）：sudo cp /boot/EFI/OC/PhxBringup.kext.bak-fw13-${TAG}/Contents/MacOS/PhxBringup /boot/EFI/OC/Kexts/PhxBringup.kext/Contents/MacOS/PhxBringup"
-echo "重開機後確認：ioreg -r -c PhxBringup -d 1 | grep phx-build   （要是 134）"
+echo "重開機後確認：ioreg -r -c PhxBringup -d 1 | grep phx-build   （要等於 PhxBringup.cpp 裡的 PHX_KEXT_BUILD）"
