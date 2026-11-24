@@ -42,6 +42,8 @@
 - **硬解第 2 步通過（2026-11-24 13:11）**：自己的 H.264 parser＋message 產生器解出 mechrevo 的 160×128 四象限測試檔（Y 48／200、UV 128 正確），libdrm 畫面用自己的 message 也解對。下一步：P／B 畫面（DPB 管理）。
 - **硬解第 3 步通過（2026-11-24 19:21）**：I／P／B 都能解，4 支 x264 測試串流（含 720p、B-pyramid、weighted pred）共 160 張畫面跟 ffmpeg 逐 byte 相同（MD5），VCN 每張約 0.7–1.5 ms（`vcn/log-1124-192154.txt`）。下一步：kext 解碼介面＋VideoToolbox 外掛。
 - **硬解第 4 步通過（2026-11-24 19:54，PhxBringup build 135）**：一般使用者經 kext selector 130 解碼，160 張 bit-exact；720p 整體每張 4.22 ms（237 fps，build 134 經 BAR 讀回是 208 ms）。1080p（t5，含 frame cropping）也 bit-exact，整體每張 7.77 ms（129 fps）。下一步：開機自動 `vcnctl up`（先量 VCN 開著的閒置耗電）、VideoToolbox 外掛。
+- **GPU 接管被自動關閉（2026-11-25 03:35）**：03:33 開機，phxboot armed 之後還在跑（每次開機約 2 分鐘，到 `done` 為止），使用者 03:35 手動重開 → 下次開機 phxboot 看到 `/var/db/phxboot.pending` 還在，照設計建立 `phxboot-off`。不是故障。**開機後等 phxboot 寫 `done`（約 2 分鐘）之前不要重開。** 恢復：`sudo rm /Users/Shared/gpu/phxboot-off` 再重開。
+  - 同晚 WindowServer 22:04、22:43 各 abort 一次：`MetalBacking::AbortWithTextureInfo` ← `MetalIOSurfaceBacking::PrepareForUse` ← `CaptureSurfaceMetal::Populate`（螢幕擷取那條路：截圖、錄影、Mission Control 一類）。NVMTL 從 IOSurface 建 texture 失敗。22:09 有 Logi Options+ 安裝紀錄，有沒有關聯不知道。還沒追。
 - **硬解第 5 步：系統 VideoToolbox 用上 VCN（2026-11-24 20:58）**：不指定解碼器時系統選了 FW13 外掛，1080p 30 張 bit-exact、每張 8.29 ms（軟體 11.91 ms）。Safari 在 WebKit.GPU 裡會建立外掛，但 0.2 版在那裡打不開 kext，0.3 修正中。開機後約 2 分鐘 VCN 才可用，之前自動退回軟體解碼。
   - **Safari 暫停（2026-11-24 21:45）**：com.apple.WebKit.GPU 的沙盒連 PhxBringup 和借名的子 service（build 137）都不准開，文字檔的規則跟實際行為不符；Safari 自動退回軟體解碼。詳見 vcn/HWDEC-PLAN.md。
 - **SDMA 解除 halt（GFXOFF 階段 1a，2026-11-24 05:24，執行期、重開機就恢復）**：RLC_GPM_STAT 回到 Linux 的 0x000c001a；閒置封裝中位數 8.03 → **7.27 W**（不同次開機比較，見 GFXOFF-PLAN.md）。上游 RX16 有 SDMA 運作時自己重開的紀錄，長時間穩定性觀察中；設回 halt：`sudo bash /Users/kaoru/fw13-hackintosh/gpu/sdma-test.sh --halt`。
