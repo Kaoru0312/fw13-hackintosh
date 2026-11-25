@@ -244,3 +244,11 @@
   3. VoodooI2C 輪詢（`-vi2c-force-polling`）等在這個階段還在動的東西。
 - 下一次：先停用 [39]、[40]（`power/hib-nopm.sh`，只在測試模式用，`hib-test.sh off` 會一起還原），其他不變。
 - 也已清除 NVRAM `phx-sleep-note`，下次的值一定是新的。
+
+### 第五次測試（2026-11-25 22:1x，Wi-Fi kext、[39][40] 都停用）：暫停
+
+- `sleepnow` 後 8 分半：電源燈亮、風扇轉、螢幕黑（CPU 還在跑）。使用者決定到此為止，強制關機。
+- 結果（映像標頭、phx-sleep-note）還沒讀；下次開始時先跑：
+  `sudo dd if=/var/vm/sleepimage bs=4096 count=1 2>/dev/null | xxd -l 96 | tail -1; nvram phx-sleep-note`
+- 暫停時要做：`hib-test.sh off`（還原 bak-hib2：Wi-Fi kext、[39][40]、-v／debug=0x100 都回來；disablesleep 1）。
+- 之後要繼續的方向：映像寫入階段卡住／重置（嫌疑：NVMe polled I/O、VoodooI2C 輪詢、其他在 polled 階段還在動的驅動）。
