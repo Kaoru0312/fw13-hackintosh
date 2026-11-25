@@ -219,3 +219,15 @@
 - 第二次測試睡眠途中到底發生什麼，看不到了：NVRAM 的 PanicInfo 後來被開機時的 Wi-Fi panic 蓋掉。
 - **下次測試前**：`hib-test.sh on` 現在也會停用啟用中的 `*Airport*` kext（要剛好一個，否則停止），測試期間 macOS 沒有 Wi-Fi；
   `off` 從 bak-hib2 還原整份 config，Wi-Fi kext 一起回來。這樣睡眠失敗不會把網卡弄卡住，也能把 Wi-Fi 從原因裡排除。
+
+### 第三次測試（2026-11-25 21:45，Wi-Fi kext 停用）：驅動都斷電了、金鑰寫了，之後卡住
+
+- `hib-test.sh on` 後重開，第一次選 OpenCore 又是 "Boot Failed"（這次**沒有** panic；原因不知道），再選一次正常開機。
+  確認：AirportMtk 沒載入、`phxsleep_installed = 1`、SleepDisabled 0、hibernatemode 25。
+- 21:45:23 `Entering Sleep state due to 'Software Sleep'` → 電源燈一直亮、螢幕全黑 → 21:51 強制關機。重開正常進 macOS（Wi-Fi 沒載入，網卡沒卡住）。
+- **`nvram phx-sleep-note = "1 44 1"`**：PhxSleepPolicy 的 `setPowerState(0)` 跑了一次，當時 `IOHibernateRTCVariables` 長度 44（金鑰有產生），抄進 NVRAM 1 次。
+  這個變數能留到下次開機，表示之後 kernel 的 NVRAM sync（`IOHibernateSystemHasSlept()`）也跑了。
+  → **驅動斷電、金鑰、NVRAM sync 都過了；卡在寫映像或最後斷電（進 S4）**。
+- 開機後 NVRAM 沒有 `boot-image`／`IOHibernateRTCVariables`，`IOHibernateState = 0`：推論 OpenCore／boot.efi 讀到了、發現映像不完整（映像標頭最後才寫）就丟掉、正常開機。未證實。
+- `/var/vm/sleepimage` 的 mtime 還是 21:39（建檔時間）：休眠是用 polled I/O 直接寫磁碟區塊，不經過檔案系統，mtime 不會變，**不能拿來判斷**。
+- 還不知道是「寫得很慢」還是「真的卡死」。下一次：同樣流程，插電、少開程式，**等 20 分鐘**再判斷。
