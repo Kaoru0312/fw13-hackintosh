@@ -203,3 +203,13 @@
   如果刪了還是不行：CachyOS `sudo cp /boot/EFI/OC/config.plist.bak-hib2 /boot/EFI/OC/config.plist`（拿回 HibernateSkipsPicker=true 之前？不是——bak-hib2 是 on 之前的，
   仍是 SkipsPicker=true；要關掉 SkipsPicker／HibernateMode 用 bak-hib1，那份也沒有 PhxSleepPolicy 和 SSDT-S3）。
 - 目前 macOS 端的設定：`disablesleep 0`、hibernatemode 25、sleep 0（hib-test on 的狀態）、boot-args 沒有 -v／debug=0x100。
+
+### 2026-11-25 白天：macOS 開不進去的真正原因是 Wi-Fi 驅動開機 panic（不是休眠映像）
+
+- CachyOS 看 Apple GUID 的 efivars：**沒有** `boot-image`／`boot-signature`／`IOHibernateRTCVariables` → 更正：昨晚的進度條是一般開機的進度條，不是在還原映像。
+- 有 `AAPL,PanicInfo0000`–`0006`（每段 768 bytes，xnu `packA` 的 7-bit 壓縮）。在 CachyOS 用 python 解出來（一行指令見對話；先用模擬資料驗證過）：
+  `assertion failed: MEXT_REF(m) != 0`（uipc_mbuf.c:1074），backtrace：`AirportItlwm::start` → `mwx_attach` → `mwx_init_hardware` →
+  `mt7921_mcu_init` → `mwx_load_firmware` → `mwx_mcu_send_firmware` → `mwx_dma_tx_cleanup` → `m_freem`。**開機時**載入 Wi-Fi 驅動就 panic → 循環。
+- 跟 PR #20 docs/SLEEP.md 寫的一樣：睡眠中途失敗會讓 MT7922 停在異常狀態，重開機不會好，要完全斷電（關機、拔電、按住電源 20 秒）。
+- 下一步：完全斷電再開 macOS；不行就從 CachyOS 停用 AirportMtkWlan（Kernel.Add）讓 macOS 不帶 Wi-Fi 開機。
+- 之後的休眠測試要避開 Wi-Fi 驅動：測試前不只關 Wi-Fi，可能要讓驅動在睡眠前卸載或乾脆停用 kext（待定）。
