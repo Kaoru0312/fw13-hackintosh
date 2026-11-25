@@ -231,3 +231,16 @@
 - 開機後 NVRAM 沒有 `boot-image`／`IOHibernateRTCVariables`，`IOHibernateState = 0`：推論 OpenCore／boot.efi 讀到了、發現映像不完整（映像標頭最後才寫）就丟掉、正常開機。未證實。
 - `/var/vm/sleepimage` 的 mtime 還是 21:39（建檔時間）：休眠是用 polled I/O 直接寫磁碟區塊，不經過檔案系統，mtime 不會變，**不能拿來判斷**。
 - 還不知道是「寫得很慢」還是「真的卡死」。下一次：同樣流程，插電、少開程式，**等 20 分鐘**再判斷。
+
+### 第四次測試（2026-11-25 21:56）：約 2 分鐘後自己重開，沒有 panic；**映像沒寫完**
+
+- 21:56:16 `Entering Sleep state` → 21:58:20 已經是新的開機（中間韌體 "Boot Failed" 一次）。DiagnosticReports 沒有新 panic。
+- `/var/vm/sleepimage` 第一頁：只有 offset 0x58 是 `9d be e0 f1` = `kIOHibernateHeaderOpenSignature`（xnu `IOHibernatePrivate.h`），其他全 0。
+  xnu `IOHibernateIO.cpp`：`IOHibernateSystemSleep()` 打開檔案時用 Open 簽章寫 extent 資訊，映像寫完才會寫 `kIOHibernateHeaderSignature`（0x73696d65）。
+  → **`hibernate_write_image` 沒有寫完**（第三次卡住、第四次重置，都在寫映像的階段，或寫之前的 polled I/O 準備）。
+- 寫映像時 xnu 會停住其他 CPU、只留一顆用 polled I/O 寫磁碟。嫌疑（都未證實）：
+  1. `AMDRyzenCPUPowerManagement`（[39]）用 `pmKextRegister` 掛進 xnu 的 CPU 電源管理，停 CPU 時會經過它；
+  2. NVMe 的 polled I/O；
+  3. VoodooI2C 輪詢（`-vi2c-force-polling`）等在這個階段還在動的東西。
+- 下一次：先停用 [39]、[40]（`power/hib-nopm.sh`，只在測試模式用，`hib-test.sh off` 會一起還原），其他不變。
+- 也已清除 NVRAM `phx-sleep-note`，下次的值一定是新的。
