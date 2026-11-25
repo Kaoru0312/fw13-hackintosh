@@ -1,7 +1,7 @@
 #!/bin/bash
 # 休眠第 5 步（第一次測試）的開關。只做「能不能從休眠映像還原」需要的設定，畫面能不能回來這次不管
 # （PhxAccel 還沒有 PR #20 的 phxfb_wake／nvaccelfb=9，喚醒後畫面大概不會回來）。
-#   on ：boot-args 拿掉 -v、debug=0x100（PR #20：帶著它們進入睡眠會卡住）；
+#   on ：boot-args 拿掉 -v、debug=0x100（PR #20：帶著它們進入睡眠會卡住）；停用 Wi-Fi kext（AirportMtkWlan，見下方註解）；
 #        pmset -a hibernatemode 25 standby 0 autopoweroff 0 powernap 0，然後 disablesleep 0。
 #        sleep（閒置自動睡眠）設成 0（AC 和電池都是；原本電池是 1 分鐘），只有手動「睡眠」或闔上螢幕才會睡。
 #   off：boot-args 從 config.plist.bak-hib2 還原（-v、debug=0x100 回來）；pmset disablesleep 1、hibernatemode 照 on 之前存下的值。
@@ -27,6 +27,17 @@ on)
   cp "$P" "$BAK" && cmp -s "$P" "$BAK" || { echo "備份失敗，停止"; exit 1; }
   NEW=$(printf ' %s ' "$BA" | sed -E 's/ -v / /; s/ debug=0x100 / /; s/^ +//; s/ +$//')
   $PB -c "Set $K $NEW" "$P" && plutil -lint "$P" >/dev/null || { echo "改 config 失敗，從備份還原"; cp "$BAK" "$P"; exit 1; }
+  # Wi-Fi 驅動（AirportMtkWlan）睡眠途中失敗會讓 MT7922 卡住，之後每次開機都在 mwx_load_firmware panic，要完全斷電才恢復
+  # （2026-11-25）。測試期間停用它；off 從 bak-hib2 還原整份 config，會一起打開。
+  N=$(plutil -extract Kernel.Add raw -o - "$P"); W=""
+  for ((i = 0; i < N; i++)); do
+    b=$($PB -c "Print :Kernel:Add:$i:BundlePath" "$P")
+    case "$b" in *[Aa]irport*) [ "$($PB -c "Print :Kernel:Add:$i:Enabled" "$P")" = true ] && W="$W $i";; esac
+  done
+  set -- $W
+  [ $# = 1 ] || { echo "啟用中的 Airport* kext 不是剛好一個（找到：${W:-無}），從備份還原、停止"; cp "$BAK" "$P"; exit 1; }
+  echo "== 停用 Wi-Fi kext：Kernel.Add[$1] $($PB -c "Print :Kernel:Add:$1:BundlePath" "$P")（重開機後生效，測試期間沒有 Wi-Fi）"
+  $PB -c "Set :Kernel:Add:$1:Enabled false" "$P" && plutil -lint "$P" >/dev/null || { echo "改 config 失敗，從備份還原"; cp "$BAK" "$P"; exit 1; }
   echo "== boot-args（重開機後生效）"
   echo "  原本：$BA"
   echo "  現在：$($PB -c "Print $K" "$P")"

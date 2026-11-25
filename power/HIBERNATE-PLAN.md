@@ -213,3 +213,9 @@
 - 跟 PR #20 docs/SLEEP.md 寫的一樣：睡眠中途失敗會讓 MT7922 停在異常狀態，重開機不會好，要完全斷電（關機、拔電、按住電源 20 秒）。
 - 下一步：完全斷電再開 macOS；不行就從 CachyOS 停用 AirportMtkWlan（Kernel.Add）讓 macOS 不帶 Wi-Fi 開機。
 - 之後的休眠測試要避開 Wi-Fi 驅動：測試前不只關 Wi-Fi，可能要讓驅動在睡眠前卸載或乾脆停用 kext（待定）。
+- **2026-11-25 21:2x 恢復**：完全斷電（關機、拔電、按住電源 20 秒）後 macOS 開得起來（第一次開機顯示「因問題重新開機」，是 NVRAM 裡那份 panic，
+  存成 `Kernel-2026-11-25-212933.panic` 後清掉）。`hib-test.sh off` 已跑：SleepDisabled 1、hibernatemode 0、boot-args 還原（下次開機有 -v）。
+  Wi-Fi 正常：en4 192.168.0.229，AirportMtkWlan 有載入。
+- 第二次測試睡眠途中到底發生什麼，看不到了：NVRAM 的 PanicInfo 後來被開機時的 Wi-Fi panic 蓋掉。
+- **下次測試前**：`hib-test.sh on` 現在也會停用啟用中的 `*Airport*` kext（要剛好一個，否則停止），測試期間 macOS 沒有 Wi-Fi；
+  `off` 從 bak-hib2 還原整份 config，Wi-Fi kext 一起回來。這樣睡眠失敗不會把網卡弄卡住，也能把 Wi-Fi 從原因裡排除。
